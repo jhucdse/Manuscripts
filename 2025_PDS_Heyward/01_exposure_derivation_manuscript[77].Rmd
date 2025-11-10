@@ -1,0 +1,262 @@
+---
+title: "xx_exposure_derivation"
+output:
+  pdf_document: default
+  html_document: default
+date: "2023-08-11"
+---
+
+#### NOTE: If re-running analysis, to avoid updated counts skip to chunk "indexdate" and run "load" command for ICI_rx_index.Rdata (Saved in local directory)
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+library(odbc)
+library(DBI)
+library(dbplyr)
+library(dplyr)
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(knitr)
+library(writexl)
+setwd("S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript")
+```
+
+\
+
+```{r pmap}
+# connect to PMAP database
+pmap.con <- DBI::dbConnect(
+odbc::odbc(),
+Driver = "ODBC Driver 17 for SQL Server",
+Server = "esmpmdbpr5.win.ad.jhu.edu",
+Database = "ThoracicOncology_Murray_IRB00355453_Projection",
+Uid = "WIN\\jheywar1",
+Pwd = rstudioapi::askForPassword("Password"),
+Trusted_Connection = "yes"
+)
+```
+
+\
+
+#### How many patients total?
+
+\
+
+```{r pmap patient count}
+## Use derived patient summary table
+epic_patients <- tbl(pmap.con, in_schema("dbo", "derived_epic_patient"))
+
+# Look at variables
+head(epic_patients)
+
+## Create local dataframe with select variables
+epic_patientsdf <- epic_patients %>%
+  select(cohort_id) %>%
+  collect()
+
+length(unique(epic_patientsdf$cohort_id))  ## 25132
+
+
+
+
+epic_patients_sept2024 <- tbl(pmap.con, in_schema("dbo", "derived_epic_patient"))
+
+# Look at variables
+head(epic_patients_sept2024)
+
+## Create local dataframe with select variables
+epic_patientsdf_sept2024 <- epic_patients_sept2024 %>%
+  collect()
+
+length(unique(epic_patientsdf_sept2024$cohort_id))  ## 26833
+
+
+```
+
+
+\
+
+### Load med admin records into a local dataframe 
+
+\
+
+```{r med admin load dataframe}
+## Use derived med ADMIN table
+admin_meds <- tbl(pmap.con, in_schema("dbo", "derived_med_admin"))
+
+# Look at variables
+head(admin_meds)
+
+## Create local dataframe with select variables
+admin_medsdf <- admin_meds %>%
+  select(cohort_id, pat_enc_csn_id, order_med_id, hosp_admsn_time, hosp_disch_time, generic_name, medication_name, thera_classname, pharm_classname, pharm_subclassname, ordering_date, order_end_time, scheduled_time, route, site, sig, dose_unit) %>%
+  collect()
+
+dim(admin_medsdf)  ## There are 5,201,637 rows in this table 
+
+length(unique(admin_medsdf$cohort_id)) ## 17,346
+```
+
+\
+
+####Use medication keywords in the derived_med_admin table (more blunt force) (this is what I am using for now)
+
+### Note: see v3 for other suggested method (code) - this is what JCM proposed but it ran into issues
+
+### NOT DONE HERE BUT CONSIDER FOR LATER WITH REFINEMENTS:
+## Step 1: Use derived_medorder_components and derived_med_admin to pull list of patients with exposure to any ICI. This is a two-stage process:
+### 1. Filter derived_medorder_components table to find all patients exposed to ICI drug classes, using the pharm_classname field
+### 2. Use the pat_enc_csn_id from those results to find those records that have a match in the derived_med_admin table, from which we can find the date of administration and other details as desired.
+
+\
+
+```{r med admin missingness}
+## Check number of missing values
+ 
+   ## Insert NA for blanks
+  admin_medsdf$generic_name <- na_if(admin_medsdf$generic_name, '')
+  admin_medsdf$medication_name <- na_if(admin_medsdf$medication_name, '') 
+  admin_medsdf$thera_classname <- na_if(admin_medsdf$thera_classname, '')
+  admin_medsdf$pharm_classname <- na_if(admin_medsdf$pharm_classname, '')
+  admin_medsdf$pharm_subclassname <- na_if(admin_medsdf$pharm_subclassname, '')
+
+ miss_gn_a   <- sum(is.na(admin_medsdf$generic_name))       # 588984 missing
+ miss_mn_a   <- sum(is.na(admin_medsdf$medication_name))    # 0
+ miss_tc_a   <- sum(is.na(admin_medsdf$thera_classname))    # 524979
+ miss_pc_a   <- sum(is.na(admin_medsdf$pharm_classname))    # 523388
+ miss_psc_a  <- sum(is.na(admin_medsdf$pharm_subclassname)) # 531902
+
+ missing_admin <- data.frame(fields = c("generic_name", "medication_name", "thera_classname",
+                                         "pharm_classname", "pharm_subclassname"),
+
+ nmissing = c(miss_gn_a, miss_mn_a, miss_tc_a, miss_pc_a, miss_psc_a))
+
+ missing_admin_tbl <- kable(missing_admin, col.names = c("Data field", "No. missing"), caption= "Missing data fields- Med Admin", align='l')
+ missing_admin_tbl
+
+
+    ## only the medication_name field has 0 blanks.. we will need to use this one
+
+ ## Summarize classes of administered meds using "thera_classname"
+ admin_classes <- kable(table(admin_medsdf$thera_classname), caption = "Therapeutic classes Frequency Table- Med Admin")
+ admin_classes  ## There are 15,528 records for "ANTINEOPLASTICS"
+
+ ## Filter on drug class "ANTINEOPLASTICS"
+ admin_onc <- admin_medsdf %>%
+   filter(thera_classname=="ANTINEOPLASTICS")
+
+ ## Table of pharmaceutical classes within "antineoplastics"
+ admin_oncmeds <- kable(table(admin_onc$pharm_classname), caption = "Oncology Classes Frequency Table- Med Admin")
+ admin_oncmeds
+
+ ## Filter records associated with anti-PD-1 MAB
+ admin_icionly <- filter(admin_onc, pharm_classname=="ANTINEOPLASTIC,ANTI-PROGRAMMED DEATH-1 (PD-1) MAB")
+ admin_icionly  # There are 493 records for anti-PD1
+ length(unique(admin_icionly$cohort_id))  # There are 45 unique cohort IDs
+```
+
+```{r admin tables}
+# missing_admin_tbl
+# admin_classes
+# admin_oncmeds
+
+## Can delete this chunk, only need to print silenced output from above
+```
+
+```{r admin medication_name field, results = FALSE}
+#####  ICI users identified using the medication_name field in the derived_med_admin table
+
+#a <- admin_medsdf[grep(pattern="BMS-986016", x=admin_medsdf$medication_name), ]
+
+## Search the "medication_name" field: Keywords are all ICI molecules and products
+
+## Anti-PD-1 and Anti-PD-L1 products
+## Create column of ICI keywords
+ICIname <- data.frame(code = c("PEMBROLIZUMAB", "KEYTRUDA", "NIVOLUMAB", "OPDIVO", "DURVALUMAB", "IMFINZI", "ATEZOLIZUMAB", "TECENTRIQ", "IPILIMUMAB", "YERVOY", "BMS-986016", "JNJ-64041757", "JNJ-757", "MBG453", "MONALIZUMAB", "PDR001", "BMS-936558"))
+dim(ICIname)
+
+## Write function to search each member of medication_name field where ICI was recorded as part of a patient encounter
+ICI_search <- function(ICI){
+ICI_match <- admin_medsdf[grep(pattern=ICI, x=admin_medsdf$medication_name), ]
+return(as.data.frame(ICI_match))
+}
+
+### Use apply() to return matches on all ICI keywords of interest
+ICI_rx <- apply(ICIname, 1, ICI_search)
+ICI_rx_t <- bind_rows(ICI_rx[[1]], ICI_rx[[2]], ICI_rx[[3]], ICI_rx[[4]], 
+                      ICI_rx[[5]], ICI_rx[[6]], ICI_rx[[7]], ICI_rx[[8]], 
+                      ICI_rx[[9]], ICI_rx[[10]], ICI_rx[[9]], ICI_rx[[10]],
+                      ICI_rx[[11]], ICI_rx[[12]], ICI_rx[[13]], ICI_rx[[14]],
+                      ICI_rx[[15]], ICI_rx[[16]], ICI_rx[[17]])  ## 46,791 observations corresponding to the ICI of interest ## THis became 39246 after the additional codes were added (all after Yervoy)... why?
+
+
+length(unique(ICI_rx_t$cohort_id)) # 1,971 unique ICI patients
+
+## Can filter to matched by medication, if desired.
+# pembro <- ICI_rx_t[grep("PEMBROLIZUMAB", ICI_rx_t$medication_name), ]
+
+## Just checking- Records for patients who are in the lung immunotherapy sub registry
+# iciadmin_irae_registry <- ICI_rx_t[ICI_rx_t$cohort_id %in% irae_patdf$cohort_id, ] # 12,175 records
+```
+
+\
+
+## Step 2: Mark index prescription for each patient
+
+\
+
+```{r indexdate}
+## Isolate the date of first ICI exposure for each patient (to use as Time0 for follow-up/look-back)
+
+## Mark the first ICI Rx per patient and count appearances
+
+# Group the data by ID and create new columns indicating the first appearance of the value
+ICI_rx_t <- ICI_rx_t  %>%
+  arrange(cohort_id, ordering_date) %>%
+  group_by(cohort_id) %>%
+  mutate(first_appearance = ifelse(row_number() == 1, 1, as.integer(!duplicated(medication_name)))) %>%
+  mutate(RunningCount = cumsum(cohort_id == lag(cohort_id, default = first(cohort_id))))
+
+# Print the result
+View(ICI_rx_t)
+
+
+## Create another table that just counts appearances per person
+ICI_rx_table <- count(ICI_rx_t, cohort_id)
+
+kable(table(ICI_rx_table$n))
+
+## Merge the total count with the running list of ICI
+ICI_rx_t <- left_join(ICI_rx_t, ICI_rx_table, by = "cohort_id")
+
+
+# Save to directory
+save(ICI_rx_t,file="ICI_rx_t.Rdata")
+
+
+## Create a table with just the cohort ID, ICI, and first date of ICI use (index date/Time 0)
+# If need be, load saved ICI_rx_index into R session 
+  #load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/ICI_rx_t.Rdata")
+  
+ICI_rx_index <- subset(ICI_rx_t,first_appearance==1 & RunningCount==1, select = c("cohort_id","medication_name","ordering_date"))
+n_ICI_index <- length(unique(ICI_rx_index$cohort_id)) ## 1,864 unique cohort_id
+######
+
+# Save to directory
+save(ICI_rx_index, file="ICI_rx_index.Rdata")
+
+## Create frequency table of ICI use
+# If need be, load saved ICI_rx_index into R session 
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/ICI_rx_index.Rdata")
+
+length(unique(ICI_rx_index$cohort_id)) #1983 patients
+  
+ici_index_meds <- kable(table(ICI_rx_index$medication_name))
+ici_index_meds
+```
+
+
+
+

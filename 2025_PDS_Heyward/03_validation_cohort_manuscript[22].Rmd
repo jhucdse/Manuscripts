@@ -1,0 +1,3620 @@
+---
+title: "xx_validation_cohort"
+output: html_document
+date: "2023-03-21"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(odbc)
+library(DBI)
+library(dbplyr)
+library(dplyr)
+library(tidyverse)
+library(tidyr)
+library(lubridate)
+library(scales)
+library(knitr)
+install.packages('writexl')
+library(writexl)
+library(janitor)
+install.packages('misty')
+library(misty)
+setwd("S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript")
+```
+
+```{r pmap connect}
+# connect to PMAP database
+install.packages('devtools')
+library(devtools)
+devtools::install_github("r-dbi/odbc")
+
+pmap.con <- DBI::dbConnect(
+odbc::odbc(),
+Driver = "ODBC Driver 17 for SQL Server",
+Server = "esmpmdbpr5.win.ad.jhu.edu",
+Database = "ThoracicOncology_Murray_IRB00355453_Projection",
+Uid = "WIN\\jheywar1",
+Pwd = rstudioapi::askForPassword("Password"),
+Trusted_Connection = "yes"
+)
+```
+
+\
+
+#### Step 1. Collect data elements for each member of the Lung Immune Therapy IRAE cohort from various tables (cohort_id, demographic info, toxicity status - yes/no, site, severity)
+
+\
+
+#### 1a. RedCAP registry data dictionary for reference/merge into patient dataframe (download saved dataframes at end)
+
+\
+
+```{r tox data dictionary}
+## Use IRAE patient summary
+irae_dd <- tbl(pmap.con, in_schema("dbo", "lung_uad_io_redcap_data_dictionary")) 
+# Look at variables
+head(irae_dd)
+
+## Create local dataframe 
+irae_dddf <- irae_dd %>%
+  collect()
+
+## Store and view toxicity code dictionary
+  irae_toxcodes <- irae_dddf %>%
+    filter(field_name == "ae_type") %>% 
+    select(select_choices_or_calculations) 
+  
+  irae_toxcodes1 <-data.frame(codes = c(do.call('cbind', strsplit(as.character(irae_toxcodes$select_choices_or_calculations),'|',fixed=TRUE))))
+  
+  ## Split this out further with 2 columns with number and name of AE separated (comma delimited)
+  irae_toxnames <-data.frame(do.call('rbind',strsplit(as.character(irae_toxcodes1$codes),',',fixed=TRUE)))
+  
+  ## Create dataframe with informative column headings
+  irae_toxnames <- irae_toxnames %>%
+    mutate(ae_type = X1) %>%
+    mutate(ae_name = X2) %>%
+    select(ae_type, ae_name) %>%
+    mutate(ae_type = str_squish(ae_type))
+  
+  ##Save to directory 
+  save(irae_toxnames, file = "irae_toxnames.Rdata")
+  
+  View(irae_toxnames)
+  
+  
+## Store and view ICI therapy use codes 
+    irae_icicodes <- irae_dddf %>%
+    filter(field_name == "immuno_agent") %>% 
+    select(select_choices_or_calculations) 
+  
+  irae_icicodes1 <-data.frame(codes = c(do.call('cbind', strsplit(as.character(irae_icicodes$select_choices_or_calculations),'|',fixed=TRUE))))
+  
+  ## Split this out further with 2 columns with number and name of medication separated (comma delimited)
+  irae_icinames <-data.frame(do.call('rbind',strsplit(as.character(irae_icicodes1$codes),',',fixed=TRUE)))
+  
+  ## Create dataframe with informative column headings
+  irae_icinames <- irae_icinames %>%
+    mutate(ici_type = X1) %>%
+    mutate(ici_name = X2) %>%
+    select(ici_type, ici_name) %>%
+    mutate(ici_type = str_squish(ici_type))
+  
+  ## Save to directory 
+  save(irae_icinames, file = "irae_icinames.Rdata")
+
+  View(irae_icinames)
+  
+   
+## Store and view cancer therapy codes (ICI and all others)
+    irae_txcodes <- irae_dddf %>%
+    filter(field_name == "type_of_treatment") %>% 
+    select(select_choices_or_calculations) 
+  
+  irae_txcodes1 <-data.frame(codes = c(do.call('cbind', strsplit(as.character(irae_txcodes$select_choices_or_calculations),'|',fixed=TRUE))))
+  
+  ## Split this out further with 2 columns with number and name of medication separated (comma delimited)
+  irae_txnames <-data.frame(do.call('rbind',strsplit(as.character(irae_txcodes1$codes),',',fixed=TRUE)))
+  
+  ## Create dataframe with informative column headings
+  irae_txnames <- irae_txnames %>%
+    mutate(tx_type = X1) %>%
+    mutate(tx_name = X2) %>%
+    select(tx_type, tx_name) %>%
+    mutate(tx_type = str_squish(tx_type))
+  
+  
+  ## Save to directory 
+  save(irae_txnames, file = "irae_txnames.Rdata")
+  
+  View(irae_txnames)
+  
+  
+  ## Load saved dataframes if returning to this 
+  load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_toxnames.Rdata")
+  
+  load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_icinames.Rdata")
+  
+  load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_txnames.Rdata")
+```
+
+\
+
+#### 1b. Overall patient toxicity and tx status info- collect into dataframe (Load saved dataframe at end)
+
+### NOTE: This is NOT the patient demographics table
+
+\
+
+```{r irae cohort pull}
+## Use IRAE patient summary
+irae_pat <- tbl(pmap.con, in_schema("dbo", "lung_uad_io_redcap_patient_summary")) 
+# Look at variables
+head(irae_pat)
+
+## Create local dataframe with select variables
+irae_patdf <- irae_pat %>%
+  collect()
+
+dim(irae_patdf)  ## There are 843 rows in this table 
+# No. of unique cohort_id
+length(unique(irae_patdf$cohort_id)) ## There are 842 unique cohort_id, meaning there are some duplicate patients- must remove duplicates
+
+## Mark duplicates
+irae_patdf <- irae_patdf %>%
+  arrange(cohort_id) %>%
+  mutate(duplicate_id = case_when(lag(cohort_id) == cohort_id ~1,
+                                  lag(cohort_id) != cohort_id ~0, 
+                                  is.na(lag(cohort_id)) ~0)
+                                  )
+
+
+irae_dupe <- filter(irae_patdf, duplicate_id==1)
+length(unique(irae_dupe$cohort_id))
+
+## View records of duplicate id
+irae_duplicate_ids <- filter(irae_patdf, cohort_id %in% irae_dupe$cohort_id) ## Every duplicate record (the one with the larger value "recap id") has 0 marked for "num_immunotherapy_txs"- when the first record for that patient has a value.. also don't have irae toxicities that are listed for first record... they don't match... will delete the duplicate second record in each case.
+
+## Create dataset without the duplicate rows- one per person
+irae_patdf1 <- irae_patdf %>%
+  filter(duplicate_id==0)
+
+## Save to directory 
+save(irae_patdf1, file = "irae_patdf1.Rdata")
+
+## Load saved dataframes if returning to this
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_patdf1.Rdata")
+
+
+```
+\
+
+#### 1b. Filter out non-lung cancer subjects in registry 
+
+
+```{r filter out non-lung cancer subjects from irae registry cohort}
+
+table(irae_patdf1$primary_cancer_diagnosis)
+
+irae_patdf1_lung <- filter(irae_patdf1, primary_cancer_diagnosis<3)
+table(irae_patdf1_lung$primary_cancer_diagnosis)
+
+## Now 707 individuals with NSCLC or SCLC in the cohort (down from 842). 
+
+
+## Save to directory 
+save(irae_patdf1_lung, file = "irae_patdf1_lung.Rdata")
+
+## Load saved dataframes if returning to this
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_patdf1_lung.Rdata")
+
+## ICI index date for these individuals (preliminary; cohort will continue to be filtered)
+irae_patdf1_index <- inner_join(irae_patdf1, ICI_rx_index, by = 'cohort_id')
+
+irae_patdf1_index <- irae_patdf1_index %>%
+  mutate(ici_index_yr = year(ordering_date))
+
+table(irae_patdf1_index$ici_index_yr)
+
+
+```
+
+
+#### 1b. Explore ICI exposure in this registry- using RedCAP fields (exloratory), and PMAP data fields (best source)
+
+#### Note: there was discrepancy in the ICI exposure data ascertained from various data sources. Use
+#### derived_med_admin for now (per communication with J Murray)
+
+\
+
+#### ICI exposure: using the RedCAP "patient" table's "num_immunotherapy_tx" variable
+
+\
+
+** Can skip this- exploratory
+
+```{r ici use in registry}
+## Load ICI_rx_t from exposure derivation step
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/ICI_rx_t.Rdata")
+
+## Summarize "num_immunotherapy_txs" column in the patient summary table
+ici_use_irae_patdf <- kable(table(irae_patdf1$num_immunotherapy_txs))
+ici_use_irae_patdf
+
+## Why do 101 + 248 = 349 patients have 0 or missing for num_immunotherapy_txs? Did they not receive any type of ICI?
+
+## Check how many patients on this list are on the list of ICI-exposed from the exposure derivation table
+irae_pat_match_ICIrx <- irae_patdf1[irae_patdf1$cohort_id %in% ICI_rx_t$cohort_id, ] # 603 matches between this list and ICI exposure list, out of 842
+
+## Distribution of no. of ICI tx for these patients
+kable(table(irae_pat_match_ICIrx$num_immunotherapy_txs)) ## Many matches with ICI table have blank or 0 for "num_immunotherapy_txs"... what does that variable actually mean? Maybe ignore it.
+
+## Create variable for IRAE exposure (using num_immunotherapy_txs variable)
+irae_patdf1$ici_use_pat_summ <- rep(".", 842)
+irae_patdf1$ici_use_pat_summ <- ifelse(irae_patdf1$num_immunotherapy_txs %in% c("","0"), 0, 1)
+
+table(irae_patdf1$ici_use_pat_summ)
+
+## Many people with "ici_use" = 0 or blank had IRAE- I think all were ICI-exposed in this cohort (?)
+
+irae_pat_no_ici <- irae_patdf1[irae_patdf1$num_immunotherapy_txs %in% c("","0"),] ## many of these people had ICI, and listed as having IRAE... what tx did they get? can look
+
+  ## Look at med_admin and med_orders of the "no ICI" patients in the registry.... 
+
+
+```
+
+\
+
+#### ICI exposure: use the RedCAP "treatment" table's "type_of_treatment___x" variables to cross-reference ICI exposure
+
+\
+
+** Can skip this- exploratory
+
+```{r ici use treatment table}
+## Use patient treatment table to summarize ICI use
+irae_trt <- tbl(pmap.con, in_schema("dbo", "lung_uad_io_redcap_treatment")) 
+# Look at variables
+head(irae_trt)
+
+## Create local dataframe 
+irae_trtdf <- irae_trt %>%
+  collect()
+
+dim(irae_trtdf)  ## There are 11605 rows in this table 
+length(unique(irae_trtdf$cohort_id)) ## 842 unique cohort id in this table... 
+
+head(irae_trtdf)
+
+### Summarize distribution of treatment exposures in the cohort. 
+
+### Remove blank rows (index row or something with no data)
+irae_trtdf_med_classes <-  filter(irae_trtdf, redcap_repeat_instance !='')
+length(unique(irae_trtdf_med_classes$cohort_id)) ## 815.... meaning 27 patients got no treatment? They are not on this list
+
+### Tag ever-use of each type of therapy ("types" 1-8)
+
+irae_trtdf_med_classes <- irae_trtdf_med_classes %>%
+  arrange(cohort_id, as.numeric(redcap_repeat_instance)) %>%
+  group_by(cohort_id) %>%
+  mutate(first_appearance = ifelse(row_number() == 1, 1, 0)) %>%
+  mutate(count_ici = cumsum(type_of_treatment___1)) %>%
+  mutate(sum_ici = max(count_ici)) %>%
+  mutate(ever_ici = ifelse(sum_ici >0, 1, 0)) %>%
+  group_by(cohort_id) %>%
+  mutate(count_rad = cumsum(type_of_treatment___2)) %>%
+  mutate(sum_rad = max(count_rad)) %>%
+  mutate(ever_rad = ifelse(sum_rad >0, 1, 0)) %>%
+  group_by(cohort_id) %>%
+  mutate(count_surg = cumsum(type_of_treatment___3)) %>%
+  mutate(sum_surg = max(count_surg)) %>%
+  mutate(ever_surg = ifelse(sum_surg >0, 1, 0)) %>%
+  group_by(cohort_id) %>%
+  mutate(count_chemo = cumsum(type_of_treatment___4)) %>%
+  mutate(sum_chemo = max(count_chemo)) %>%
+  mutate(ever_chemo = ifelse(sum_chemo >0, 1, 0)) %>%
+  group_by(cohort_id) %>%
+  mutate(count_targ = cumsum(type_of_treatment___5)) %>%
+  mutate(sum_targ = max(count_targ)) %>%
+  mutate(ever_targ = ifelse(sum_targ >0, 1, 0)) %>%
+  group_by(cohort_id) %>%
+  mutate(count_epigen = cumsum(type_of_treatment___6)) %>%
+  mutate(sum_epigen = max(count_epigen)) %>%
+  mutate(ever_epigen = ifelse(sum_epigen >0, 1, 0)) %>%
+  group_by(cohort_id) %>%
+  mutate(count_antiang = cumsum(type_of_treatment___7)) %>%
+  mutate(sum_antiang = max(count_antiang)) %>%
+  mutate(ever_antiang = ifelse(sum_antiang >0, 1, 0)) %>%
+  group_by(cohort_id) %>%
+  mutate(count_conj = cumsum(type_of_treatment___8)) %>%
+  mutate(sum_conj = max(count_conj)) %>%
+  mutate(ever_conj = ifelse(sum_conj >0, 1, 0))
+
+
+#c <- subset(irae_trtdf_med_classes, select = c(cohort_id, type_of_treatment___1, first_appearance, count_ici, sum_ici, ever_ici))
+  
+# a <- filter(irae_trtdf_med_classes, type_of_treatment___2==1)
+# length(unique(a$cohort_id))
+
+# b <- filter(irae_trtdf_med_classes, type_of_treatment___3==1)
+# length(unique(b$cohort_id))
+
+
+## Dataframe with summary of cancer treatments
+irae_tx_summary <- subset(irae_trtdf_med_classes, first_appearance==1, select = c(cohort_id, ever_ici, ever_rad, ever_surg, ever_chemo, ever_targ, ever_epigen, ever_antiang, ever_conj))
+
+View(irae_tx_summary)
+
+table(irae_tx_summary$ever_ici)
+
+## Filter to those who got ICI (according to this table)
+irae_tx_summary_iciusers <- filter(irae_tx_summary, ever_ici==1)
+
+## Merge this with patdf1
+irae_patdf1$ici_use_tx_summ <- ifelse(irae_patdf1$cohort_id %in% irae_tx_summary_iciusers$cohort_id, 1, 0)
+
+## Merge ICI agent received and ICI molecule received with patient summary
+irae_ici_nameclass <- subset(irae_trtdf_med_classes, first_appearance==1, select = c(cohort_id, immuno_agent, immuno_class))
+
+irae_patdf11 <- merge(irae_patdf1, irae_ici_nameclass, by="cohort_id")
+```
+
+\
+
+## RedCAP: Compare ICI exposure as measured by "num_immunotherapy_tx" and "type_of_treatment___x" 
+
+\
+
+** Can skip this- exploratory
+
+```{r compare summary tx table with other sources of medication exposure data}
+
+## Compare with num_immunotherapy_tx from redcap patient summary table
+## Look at summary of cancer tx for patients with "no" ICI ascertained from num_immunotherapy_tx
+irae_pat_no_ici_check <- irae_tx_summary[irae_tx_summary$cohort_id %in% irae_pat_no_ici$cohort_id, ] ## There are just 322 records instead of 349, so some "no ICI" patients are not listed in the treatment table at all
+
+## How many of the 322 "no ICI" patients got ICI as listed in the treatment table... 
+irae_pat_no_ici_check[irae_pat_no_ici_check$ever_ici==1,] ## 188 did. So there is a mismatch between the num_immnotherapy_tx variable in the redcap patient summary, and the information in the redcap treatment table.
+```
+
+\
+
+### Compare PMAP "med_admin" table's "medication_name" variable with the RedCAP data fields
+
+\
+
+** Can skip this- exploratory
+
+```{r compare redcap and pmap med_admin table for ici exposure}
+
+## Compare with derived_med_admin table
+# Look at med_admin for patient with ici, chemo, and epigenetic tx
+x <- filter(irae_trtdf_med_classes, cohort_id == 'TOB0047sz84cu4')
+y <- filter(admin_medsdf, cohort_id == 'TOB0047sz84cu4') ## in this case it appears the med_admin tx records match up with the redcap table... treatments and dates
+
+## No. of total matches with redcap treatment table and med_admin ICI exposure table 
+ici_redcap <- irae_tx_summary[irae_tx_summary$ever_ici==1, ] ## There are 681 patients with ICI exposure (according to tx table)
+ici_redcap_pmap <- irae_tx_summary[irae_tx_summary$ever_ici==1 & irae_tx_summary$cohort_id %in% ICI_rx_t$cohort_id, ] ## There are 598 matches with ICI exposure table from derived_med_admin.. 83 "ICI exposed" individuals (treatment table) are not in the med_admin cohort of ICI exposed, would be automatically excluded from our analysis of irAE
+
+irae_tx_summary$ici_use_pmap <- rep(".", 815)
+irae_tx_summary$ici_use_pmap <- ifelse(irae_tx_summary$cohort_id %in% ICI_rx_t$cohort_id, 1, 0)
+
+## How many received ICI according to PMAP med_admin table?
+kable(table(irae_tx_summary$ici_use_pmap)) ## 602 on list of ICI recipients
+
+## Confusion matrix
+kable(table(irae_tx_summary$ever_ici, irae_tx_summary$ici_use_pmap))
+
+## Look at the 83 individuals with ICI use in RedCAP who do not have ICI in med_admin: 
+ici_redcap_not_pmap <- filter(irae_tx_summary, ever_ici==1 & ici_use_pmap==0)
+
+## Pull med admins for those 83 individuals
+admin_meds_redcap_nonmatch <- filter(admin_medsdf, cohort_id %in% ici_redcap_not_pmap$cohort_id)
+length(unique(admin_meds_redcap_nonmatch$cohort_id)) ## only 53 individuals on the list... maybe 30 did not receive treatment at Hopkins
+kable(table(admin_meds_redcap_nonmatch$pharm_classname))
+
+## Add variable for presence in med_admin to the irae_tx_summary table
+irae_tx_summary$in_pmap_med_admin <- ifelse(irae_tx_summary$cohort_id %in% admin_medsdf$cohort_id, 1, 0)
+kable(table(irae_tx_summary$in_pmap_med_admin)) ## 33 indiviudals on this table not in med_admin.. did not get care at Hopkins? should possibly exclude.
+```
+
+\
+
+### The RedCAP treatment fields are inconsistent with one another, and the RedCAP treatment summary table does not include several enrolled participants... will classify ICI exposure by referencing the full RedCAP patient list against the med_admin ICI table. 
+
+\
+
+*** Use this to classify ICI exposure in the RedCAP cohort 
+
+\
+
+```{r ici exposure status using PMAP med_admin table}
+
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/ICI_rx_t.Rdata")
+
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/ICI_rx_index.Rdata")
+
+### note: updated this one so that it's the validation cohort with lung cancer diagnosis, only. 2024Sept14
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_patdf1_lung.Rdata")
+
+## Only include patients who received first ICI Rx on or before September 31, 2020. The irAE annotation/curation is complete through October 2020. 
+ICI_rx_index_validation <- filter(ICI_rx_index, ordering_date<'2020-09-30')
+
+irae_pat_match_ICIrx <- irae_patdf1_lung[irae_patdf1_lung$cohort_id %in% ICI_rx_index_validation$cohort_id, ]
+
+irae_patdf1_lung$ici_user_pmap_2020sept <- ifelse(irae_patdf1_lung$cohort_id %in% irae_pat_match_ICIrx$cohort_id, 1, 0)
+
+kable(table(irae_patdf1_lung$ici_user_pmap_2020sept)) ## 382 were ICI-exposed using PMAP data. These are the ones eligible for follow-up. (325 not exposed to ICI before Sept 30 2020)
+
+## Compare index date in PMAP with first ICI "tx_date" in REDCap treatment table, if they don't match within +/- 30 days then exclude 
+
+  ## Use patient treatment table 
+    irae_trt <- tbl(pmap.con, in_schema("dbo", "lung_uad_io_redcap_treatment")) 
+    # Look at variables
+    head(irae_trt)
+    
+    ## Create local dataframe 
+    irae_trtdf <- irae_trt %>%
+      collect()
+    
+irae_pat_index_compare <- merge(irae_trtdf, ICI_rx_index_validation, by = "cohort_id")
+
+irae_pat_index_compare <- irae_pat_index_compare[irae_pat_index_compare$cohort_id %in% irae_patdf1$cohort_id, ]
+
+length(unique(irae_pat_index_compare$cohort_id)) ## 470
+
+irae_pat_index_compare1 <- irae_pat_index_compare %>%
+  select(cohort_id, redcap_repeat_instance, type_of_treatment___1, epic_tx_initial_load_date, tx_date, medication_name, ordering_date) %>%
+  filter(type_of_treatment___1 ==1, !is.na(redcap_repeat_instance)) %>%
+  mutate(appearance = as.numeric(redcap_repeat_instance)) %>%
+  arrange(cohort_id, appearance) %>%
+  group_by(cohort_id) %>%
+  mutate(first_row = ifelse(row_number()==1, 1, 0),
+         index_difference = ordering_date - tx_date) %>%
+  filter(first_row==1)
+
+  kable(table(irae_pat_index_compare1$index_difference)) ## 420 are exact match, 450 within +/- 30 days of each other
+  
+  irae_pat_index_compare2 <- filter(irae_pat_index_compare1, abs(index_difference)<30)
+  
+  ##
+  
+
+## Filter dataset to "ICI users" where PMAP and REDCap index dates are similar (according to med_admin table)
+irae_patdf2 <- irae_patdf1_lung[irae_patdf1_lung$cohort_id %in% irae_pat_index_compare2$cohort_id, ]
+
+length(unique(irae_patdf2$cohort_id)) ## 361 patients included
+
+## Add in name of index ICI(s) received
+irae_patdf2_ICInames <- merge(irae_patdf2, ICI_rx_index_validation, by="cohort_id")
+
+## Filter to each specific ICI
+
+# Pembrolizumab
+irae_patdf2_pembro1 <- irae_patdf2_ICInames[grep(pattern="PEMBROLIZUMAB", x=irae_patdf2_ICInames$medication_name), ]
+
+irae_patdf2_pembro2 <- irae_patdf2_ICInames[grep(pattern="KEYTRUDA", x=irae_patdf2_ICInames$medication_name), ]
+
+  ## Add indicator to irae_patdf2
+  irae_patdf2$ici_pembro <- ifelse(irae_patdf2$cohort_id %in% irae_patdf2_pembro1$cohort_id |
+                                     irae_patdf2$cohort_id %in% irae_patdf2_pembro2$cohort_id, 
+                                   1, 0)
+  
+
+# Nivolumab
+irae_patdf2_nivo1 <- irae_patdf2_ICInames[grep(pattern="NIVOLUMAB", x=irae_patdf2_ICInames$medication_name), ]
+
+irae_patdf2_nivo2 <- irae_patdf2_ICInames[grep(pattern="OPDIVO", x=irae_patdf2_ICInames$medication_name), ]
+
+irae_patdf2_nivo3 <- irae_patdf2_ICInames[grep(pattern="BMS-936558", x=irae_patdf2_ICInames$medication_name), ]
+
+  # Add indicator to irae_patdf2
+  irae_patdf2$ici_nivo <- ifelse(irae_patdf2$cohort_id %in% irae_patdf2_nivo1$cohort_id |
+                                   irae_patdf2$cohort_id %in% irae_patdf2_nivo2$cohort_id |
+                                   irae_patdf2$cohort_id %in% irae_patdf2_nivo3$cohort_id, 
+                                 1, 0)
+
+# Durvalumab
+irae_patdf2_durva1 <- irae_patdf2_ICInames[grep(pattern="DURVALUMAB", x=irae_patdf2_ICInames$medication_name), ]
+
+irae_patdf2_durva2 <- irae_patdf2_ICInames[grep(pattern="IMFINZI", x=irae_patdf2_ICInames$medication_name), ]
+
+    ## Add indicator to irae_patdf2
+  irae_patdf2$ici_durva <- ifelse(irae_patdf2$cohort_id %in% irae_patdf2_durva1$cohort_id |
+                                     irae_patdf2$cohort_id %in% irae_patdf2_durva2$cohort_id, 
+                                   1, 0)
+
+# Atezolizumab
+irae_patdf2_atezo1 <- irae_patdf2_ICInames[grep(pattern="ATEZOLIZUMAB", x=irae_patdf2_ICInames$medication_name), ]
+
+irae_patdf2_atezo2 <- irae_patdf2_ICInames[grep(pattern="TECENTRIQ", x=irae_patdf2_ICInames$medication_name), ]
+
+    ## Add indicator to irae_patdf2
+  irae_patdf2$ici_atezo <- ifelse(irae_patdf2$cohort_id %in% irae_patdf2_atezo1$cohort_id |
+                                     irae_patdf2$cohort_id %in% irae_patdf2_atezo2$cohort_id, 
+                                   1, 0)
+
+
+# Ipilimumab
+irae_patdf2_ipi1 <- irae_patdf2_ICInames[grep(pattern="IPILIMUMAB", x=irae_patdf2_ICInames$medication_name), ]
+
+irae_patdf2_ipi2 <- irae_patdf2_ICInames[grep(pattern="YERVOY", x=irae_patdf2_ICInames$medication_name), ]
+
+    ## Add indicator to irae_patdf2
+    irae_patdf2$ici_ipi <- ifelse(irae_patdf2$cohort_id %in% irae_patdf2_ipi1$cohort_id |
+                                     irae_patdf2$cohort_id %in% irae_patdf2_ipi2$cohort_id, 
+                                   1, 0)
+
+
+# Relatlimab
+irae_patdf2_relat <- irae_patdf2_ICInames[grep(pattern="BMS-986016", x=irae_patdf2_ICInames$medication_name), ]
+
+    ## Add indicator to irae_patdf2
+    irae_patdf2$ici_relat <- ifelse(irae_patdf2$cohort_id %in% irae_patdf2_relat$cohort_id,
+                                   1, 0)
+
+
+# JNJ-757 (Listeria monocytogenes-based immunotherapy)
+irae_patdf2_jnj1 <- irae_patdf2_ICInames[grep(pattern="JNJ-64041757", x=irae_patdf2_ICInames$medication_name), ]
+
+irae_patdf2_jnj2 <- irae_patdf2_ICInames[grep(pattern="JNJ-757", x=irae_patdf2_ICInames$medication_name), ]
+
+     ## Add indicator to irae_patdf2
+    irae_patdf2$ici_jnj <- ifelse(irae_patdf2$cohort_id %in% irae_patdf2_jnj1$cohort_id |
+                                     irae_patdf2$cohort_id %in% irae_patdf2_jnj2$cohort_id, 
+                                   1, 0)
+
+
+# Sabatolimab
+irae_patdf2_sabato <- irae_patdf2_ICInames[grep(pattern="MBG453", x=irae_patdf2_ICInames$medication_name), ]
+
+    ## Add indicator to irae_patdf2
+    irae_patdf2$ici_sabato <- ifelse(irae_patdf2$cohort_id %in% irae_patdf2_sabato$cohort_id, 
+                                   1, 0)
+
+
+# Monalizumab
+irae_patdf2_mona <- irae_patdf2_ICInames[grep(pattern="MONALIZUMAB", x=irae_patdf2_ICInames$medication_name), ]
+
+    ## Add indicator to irae_patdf2
+    irae_patdf2$ici_mona <- ifelse(irae_patdf2$cohort_id %in% irae_patdf2_mona$cohort_id, 
+                                   1, 0)
+
+# Spartalizumab
+irae_patdf2_sparta <- irae_patdf2_ICInames[grep(pattern="PDR001", x=irae_patdf2_ICInames$medication_name), ]
+
+    ## Add indicator to irae_patdf2
+    irae_patdf2$ici_sparta <- ifelse(irae_patdf2$cohort_id %in% irae_patdf2_sparta$cohort_id, 
+                                   1, 0)
+
+  ## Any investigative/other (relat, JNJ, Sabat, Monal, Spartal)
+  irae_patdf2$ici_other <- ifelse(irae_patdf2$cohort_id %in% irae_patdf2_relat$cohort_id |
+                                    irae_patdf2$cohort_id %in% irae_patdf2_jnj1$cohort_id |
+                                     irae_patdf2$cohort_id %in% irae_patdf2_jnj2$cohort_id |
+                                    irae_patdf2$cohort_id %in% irae_patdf2_sabato$cohort_id |
+                                    irae_patdf2$cohort_id %in% irae_patdf2_mona$cohort_id |
+                                    irae_patdf2$cohort_id %in% irae_patdf2_sparta$cohort_id, 
+                                   1, 0)
+
+
+save(irae_patdf2, file = "irae_patdf2.Rdata")
+
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_patdf2.Rdata")
+```
+
+\
+
+#### 1c. Patient demographics (filtered to ICI treated according to derived_med_admin)
+
+\
+
+```{r redcap patient demographics}
+## Use PMAP patient summary table (must filter on RedCAP subcohort)
+pmap_demog <- tbl(pmap.con, in_schema("dbo", "derived_epic_patient")) 
+# Look at variables
+head(pmap_demog)
+
+## Create local dataframe 
+pmap_demogdf <- pmap_demog %>%
+  collect()
+
+## Summary (will filter this)
+dim(pmap_demogdf)
+length(unique(pmap_demogdf$cohort_id)) # 24561
+
+## Filter on REdCAp patient IDs
+irae_demogdf <- pmap_demogdf[pmap_demogdf$cohort_id %in% irae_patdf2$cohort_id, ]
+
+dim(irae_demogdf)  ## There are 450 rows in this table (perf)
+length(unique(irae_demogdf$cohort_id)) ## 450 unique cohort id in this table... 
+
+head(irae_demogdf)
+
+## Save to directory
+save(irae_demogdf, file = "irae_demogdf.Rdata")
+
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_demogdf.Rdata")
+```
+
+\
+
+#### 1d. Add BMI to demographics dataframe 
+
+\
+
+```{r redcap patient BMI}
+## Use PMAP patient vitals table (must filter on RedCAP subcohort)
+pmap_bmi <- tbl(pmap.con, in_schema("dbo", "derived_epic_vitals")) 
+# Look at variables
+head(pmap_bmi)
+
+## Create local dataframe 
+pmap_bmidf <- pmap_bmi %>%
+  collect()
+
+## Filter to records for BMI
+pmap_bmidf <- pmap_bmidf %>%
+  filter(meas_name == "R BMI") %>%
+  mutate(date_bmi = date(recorded_time)) %>%
+  arrange(cohort_id, date_bmi) %>%
+  group_by(cohort_id) %>%
+  mutate(first_bmi = ifelse(row_number()==1, 1, 0)) %>%
+  mutate(last_bmi = ifelse(row_number()==n(), 1, 0))
+
+## Isolate BMI value closest to ICI index date (when applicable)
+pmap_bmidf <- merge(pmap_bmidf, ICI_rx_index, by = "cohort_id", all.x = "TRUE")
+
+pmap_bmidf_single <- pmap_bmidf %>%
+  filter(case_when(is.na(medication_name) ~ first_bmi == 1, 
+         !is.na(medication_name) ~ first_bmi <2)) %>%
+  mutate(index_gap = abs(ordering_date - date_bmi)) %>%
+  arrange(cohort_id, index_gap) %>%
+  group_by(cohort_id) %>%
+  mutate(closest_bmi = ifelse(row_number()==1, 1, 0))
+
+pmap_bmidf_single <- filter(pmap_bmidf_single, closest_bmi ==1)
+
+    
+## Summary (will filter this)
+dim(pmap_bmidf_single)
+length(unique(pmap_bmidf_single$cohort_id)) # 23455
+
+## Filter on REDCap patient IDs
+irae_bmidf <- pmap_bmidf_single[pmap_bmidf_single$cohort_id %in% irae_patdf2$cohort_id, ]
+
+dim(irae_bmidf)  ## There are 471 rows in this table (perf)
+length(unique(irae_bmidf$cohort_id)) ## 471 unique cohort id in this table... 
+
+head(irae_bmidf)
+
+## Save to directory
+save(irae_bmidf, file = "irae_bmidf.Rdata")
+
+## Load if returning to this
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_bmidf.Rdata" )
+```
+
+\
+
+#### Exclude registry patients with COVID (prior to Oct 20 2020)?
+```{r}
+
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/emr_covid_t.Rdata")
+
+irae_patdf2 <- irae_patdf2 %>%
+  mutate(covid_diag = ifelse(irae_patdf2$cohort_id %in% emr_covid_t$cohort_id, 1, 0))
+
+table(irae_patdf2$covid_diag) ## 8 with covid diag before oct 23 2020
+
+irae_patdf2_covidexc <- filter(irae_patdf2, covid_diag==0)
+
+save(irae_patdf2_covidexc, file = "irae_patdf2_covidexc.Rdata")
+
+### Load file if returning to this 
+
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_patdf2_covidexc.Rdata")
+```
+
+\
+
+#### 1c. Collect toxicity cases in a dataframe (from the RedCAP toxicity table)
+
+\
+
+```{r table 3 toxicity cases}
+## 
+## Use RedCAP toxicity summary
+irae_tox <- tbl(pmap.con, in_schema("dbo", "lung_uad_io_redcap_toxicity")) 
+# Look at variables
+head(irae_tox)
+
+## Create local dataframe with select variables
+irae_toxdf <- irae_tox %>%
+  collect()
+
+dim(irae_toxdf)  ## There are 1112 rows in this table  
+
+## Merge in AE names (created above)
+irae_toxdf1 <- left_join(irae_toxdf, irae_toxnames, by= "ae_type")
+
+## Pull up coding for tox events
+head(irae_toxdf1)
+dim(irae_toxdf1)
+
+## Add AE_grade variable
+irae_toxdf1$ae_grade <- as.character(gsub(' ','',irae_toxdf1$ctcae_grade_v40))
+table(irae_toxdf1$ae_grade)
+
+## Attribution
+table(irae_toxdf1$attribution)
+
+## Summarize AE events
+
+irae_attrib <- filter(irae_toxdf1, attribution %in% c("1","2"))
+length(unique(irae_attrib$cohort_id)) ## 162
+
+kable(table(irae_attrib$ae_name))
+
+#pneumonitis_pat <- irae_attrib[irae_attrib$ae_type %in% c("41"),]
+
+## Tab number of appearances: if only 1, there was one AE, if there was more than 1, there was >1 possible AE evaluated
+irae_attrib <- irae_attrib  %>%
+  arrange(cohort_id, date_last_curated_ae) %>%
+  group_by(cohort_id) %>%
+  mutate(first_appearance = ifelse(row_number() == 1, 1, 0)) %>%
+  mutate(RunningCount = cumsum(cohort_id == lag(cohort_id, default = first(cohort_id))))
+
+irae_tox_app <- count(irae_attrib, cohort_id)
+kable(table(irae_tox_app$n))
+
+## Add no. of appearances to the dataframe
+irae_attrib <- merge(irae_attrib, irae_tox_app, by = "cohort_id")
+
+## Filter tox_attrib table to those who were ICI exposed (using med_admin as reference)
+irae_attrib_ici_pmap <- filter(irae_attrib, irae_attrib$cohort_id %in% irae_patdf2_covidexc$cohort_id) ## 141 toxicities
+
+## Save to directory 
+save(irae_attrib_ici_pmap, file = "irae_attrib_ici_pmap.Rdata")
+
+## Load dataframe if returning to this
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_attrib_ici_pmap.Rdata")
+
+    ## Summarize toxicities in this cohort
+    length(unique(irae_attrib_ici_pmap$cohort_id)) #101 unique patients 
+    
+    # No. of toxicities
+    kable(table(irae_attrib_ici_pmap$n))
+    
+    kable(table(irae_attrib_ici_pmap$n, irae_attrib_ici_pmap$first_appearance))
+    
+    # Tox type
+    kable(table(irae_attrib_ici_pmap$ae_name))
+    
+    # Tox grade
+    kable(table(irae_attrib_ici_pmap$ae_grade))
+    
+    # Tox type * tox grade 
+    kable(table(irae_attrib_ici_pmap$ae_name, irae_attrib_ici_pmap$ae_grade))
+
+head(irae_attrib_ici_pmap)
+```
+
+\
+
+#### Table 1. Demographic and treatment frequency tables (can re-run if prior dataframes are loaded; numbers are static)
+
+\
+
+```{r table 2 toxicities summary and demographics by irAE status}
+
+## Add a flag for toxicities to the patient list 
+irae_patdf2_covidexc$tox_overall_attrib <- ifelse(irae_patdf2_covidexc$cohort_id %in% irae_attrib_ici_pmap$cohort_id, 1, 0)
+
+## Merge in AE name and AE grade (for all irAE)
+irae_summ_for_merge <- irae_attrib_ici_pmap %>%
+  select(cohort_id, ae_name, ae_grade, ae_date) %>%
+  arrange(cohort_id, ae_date) %>%
+  group_by(cohort_id) %>%
+  mutate(
+      lastrow = ifelse(row_number()==n(), 1, 0),
+      ae_name_2 = lag(ae_name), 
+      ae_grade_2 = lag(ae_grade), 
+      ae_date_2 = lag(ae_date),
+      ae_name_3 = lag(lag(ae_name)), 
+      ae_grade_3 = lag(lag(ae_grade)),
+      ae_date_3 = lag(lag(ae_date)),
+      ae_name_4 = lag(lag(lag(ae_name))), 
+      ae_grade_4 = lag(lag(lag(ae_grade))),
+      ae_date_4 = lag(lag(lag(ae_date)))
+  )
+  
+irae_summ_for_merge1 <- filter(irae_summ_for_merge, lastrow==1)
+  
+
+irae_patdf2_covidexc <- merge(irae_patdf2_covidexc, irae_summ_for_merge1, by = "cohort_id", all.x = TRUE)
+
+
+## Merge patient summary (with tox merged), demographics
+irae_pat_demog <- merge(irae_patdf2_covidexc, irae_demogdf, by= "cohort_id")
+
+## Merge in BMI
+irae_bmidf_only <- irae_bmidf %>%
+  select(cohort_id, meas_value) %>%
+  mutate(bmi = as.numeric(meas_value))
+
+irae_pat_demog <- merge(irae_pat_demog, irae_bmidf_only, by = "cohort_id")
+
+## Merge in REDCap ICI index date (to calculate age at tx initiation)
+irae_indexici_only <- irae_pat_index_compare2 %>%
+  select(cohort_id, tx_date) %>%
+  mutate(ici_index_dt = tx_date)
+
+irae_pat_demog <- left_join(irae_pat_demog, irae_indexici_only, by = "cohort_id")
+
+## Age (method 1)
+
+    # Create function to get age from birthdate
+    age <- function(dob, age.day = today(), units = "years", floor = TRUE) {
+        calc.age = lubridate::interval(dob, age.day) / lubridate::duration(num = 1, units = units)
+        if (floor) return(as.integer(floor(calc.age)))
+        return(calc.age)
+    }
+    
+    ## Add age using this function
+    irae_pat_demog$age <- age(irae_pat_demog$adult_age_date)
+    
+    ## Check (it works)
+    #head(irae_pat_demog)
+  
+## Age (method 2)
+irae_pat_demog$age_index <- lubridate::interval(irae_pat_demog$birth_date, irae_pat_demog$ici_index_dt) / years(1)
+
+## [create age bands]
+irae_pat_demog <- irae_pat_demog %>%
+  mutate(age1830 = ifelse(age_index >= 18 & age_index < 31, 1, 0)) %>%
+  mutate(age3140 = ifelse(age_index >= 31 & age_index < 41, 1, 0)) %>%
+  mutate(age4150 = ifelse(age_index >= 41 & age_index < 51, 1, 0)) %>%
+  mutate(age5160 = ifelse(age_index >= 51 & age_index < 61, 1, 0)) %>%
+  mutate(age6170 = ifelse(age_index >= 61 & age_index < 71, 1, 0)) %>%
+  mutate(age7180 = ifelse(age_index >= 71 & age_index < 81, 1, 0)) %>%
+  mutate(age81plus = ifelse(age_index >= 81, 1, 0)) %>%
+  mutate(agecat = ifelse(age_index >= 18 & age_index <31, 1, 
+                         ifelse(age_index >= 31 & age_index < 41, 2, 
+                                 ifelse(age_index >= 41 & age_index < 51, 3, 
+                                        ifelse(age_index >= 51 & age_index < 61, 4, 
+                                               ifelse(age_index >= 61 & age_index < 71, 5, 
+                                                      ifelse(age_index >= 71 & age_index < 81, 6, 
+                                                             ifelse(age_index >= 81, 7, 0))))))))
+
+
+
+
+
+## Generate demographic table by toxicity status
+
+## Gender
+misty::crosstab(irae_pat_demog[, c("gender", "tox_overall_attrib")], print = "col")
+
+## Race (first listed)
+misty::crosstab(irae_pat_demog[, c("first_race", "tox_overall_attrib")], print = "col")
+
+## Ethnic group
+misty::crosstab(irae_pat_demog[, c("ethnic_group", "tox_overall_attrib")], print = "col")
+
+## BMI
+mean(irae_pat_demog$bmi, na.rm = TRUE)
+sd(irae_pat_demog$bmi, na.rm = TRUE)
+
+## BMI by irAE status
+tapply(irae_pat_demog$bmi, irae_pat_demog$tox_overall_attrib, mean, na.rm = TRUE)
+tapply(irae_pat_demog$bmi, irae_pat_demog$tox_overall_attrib, sd, na.rm = TRUE)
+
+
+## Marital status
+misty::crosstab(irae_pat_demog[, c("marital_status", "tox_overall_attrib")], print = "col")
+
+
+## Age categories
+misty::crosstab(irae_pat_demog[, c("agecat", "tox_overall_attrib")], print = "col")
+
+# Age: Mean and SD: By irAE status
+tapply(irae_pat_demog$age_index, irae_pat_demog$tox_overall_attrib, mean)
+tapply(irae_pat_demog$age_index, irae_pat_demog$tox_overall_attrib, sd)
+
+mean(irae_pat_demog$age_index)
+sd(irae_pat_demog$age_index)
+
+
+## Summary of treatment received
+
+# Pembro
+misty::crosstab(irae_pat_demog[, c("ici_pembro", "tox_overall_attrib")], print = "col")
+
+# Nivo
+misty::crosstab(irae_pat_demog[, c("ici_nivo", "tox_overall_attrib")], print = "col")
+
+# Durva
+misty::crosstab(irae_pat_demog[, c("ici_durva", "tox_overall_attrib")], print = "col")
+
+# Atezo
+misty::crosstab(irae_pat_demog[, c("ici_atezo", "tox_overall_attrib")], print = "col")
+
+# Ipi
+misty::crosstab(irae_pat_demog[, c("ici_ipi", "tox_overall_attrib")], print = "col")
+
+## ALL OTHER
+misty::crosstab(irae_pat_demog[, c("ici_other", "tox_overall_attrib")], print = "col")
+
+## Specific other (not in table): 
+# Relat
+misty::crosstab(irae_pat_demog[, c("ici_relat", "tox_overall_attrib")], print = "col")
+
+# JnJ
+misty::crosstab(irae_pat_demog[, c("ici_jnj", "tox_overall_attrib")], print = "col")
+
+# Sabato
+misty::crosstab(irae_pat_demog[, c("ici_sabato", "tox_overall_attrib")], print = "col")
+
+# Mona
+misty::crosstab(irae_pat_demog[, c("ici_mona", "tox_overall_attrib")], print = "col")
+
+# Sparta
+misty::crosstab(irae_pat_demog[, c("ici_sparta", "tox_overall_attrib")], print = "col")
+
+```
+
+\
+
+
+#### Enumerate "true positive" IRAE cases using list of AE codes corresponding to those above. (True positives are the same regardless of algorithm version being used)
+
+\
+
+```{r algorithm 1 true positives}
+## The eligible codes for this case definition will be related to those listed in the Brown V et al. paper- Cardiovascular (myocarditis, pericarditis, arrhythmias, impaired left ventricular function, vasculitis), endocrine, pulmonary, nervous system, gastrointestinal, skin, hematologic, musculoskeletal, ocular, or renal toxicities)
+
+#	1	 Arthritis                         - exclude
+#	2	 Myositis 
+#	3	 Sicca Syndrome                    - exclude
+#	4	 Polymyalgia Rhuematica 
+#	5	 Vasculitis 
+#	6	 Scleroderma 
+#	7	 Lupus                             - exclude
+#	8	 Thyroiditis 
+#	9	 Graves 
+#	10	 Hypothyroidism 
+#	11	 Primary Adrenal Insufficiency 
+#	12	 Hypophysis                      - exclude 
+#	13	 Type 1 Diabetes Mellitus        - exclude
+#	14	 Vitiligo                        - exclude    
+#	15	 Bullous pemphigoid              - exclude
+#	16	 Maculopapular eruption          - exclude
+#	17	 SJS/TEN-like eruption           - exclude
+#	19	 Isolated pruritus without visible manifestations of rash     -exclude
+#	20	 Lichenoid dermatitis            - exclude
+#	21	 Rash
+#	22	 Eczematous dermatitis 
+#	23	 Erythema-multiforme-like eruption   - exclude
+#	71	 Acneiform eruption                  - exclude
+#	72	 Dermatitis herpetiformis 
+#	73	 Drug hypersensitivity           - exclude
+#	74	 Follicular eruption             - exclude
+#	75	 Grover's disease                - exclude
+#	76	 Mucositis                       - exclude
+#	77	 Panniculitis                    - exclude
+#	78	 Pemphigus vulgaris             - exclude
+#	79	 Psoriasiform eruption          - exclude
+#	80	 Sweet's syndrome               - exclude
+#	81	 Urticarial eruption            - exclude
+#	82	 Xerosis                        - exclude
+#	24	 Colitis 
+#	25	 Hepatitis 
+#	26	 Esophagitis                    - exclude
+#	27	 Gastritis 
+#	28	 Enteritis 
+#	29	 Enterocolitis 
+#	30	 Pancreatitis                   - exclude
+#	31	 Myasthenia Gravis              - exclude
+#	32	 Guillain-Barre Syndrome        - exclude
+#	33	 Peripheral neuropathy          - exclude
+#	34	 Autonomic neuropathy           - exclude
+#	35	 Aseptic meningitis             - exclude
+#	36	 Encephalitis                   
+#	37	 Transverse Myelitis 
+#	38	 Optic neuritis                 - exclude
+#	39	 CIDP                           - exclude
+#	40	 Myositis 
+#	41	 Pneumonitis 
+#	42	 Sarcoid-like reaction          - exclude
+#	43	 Myocarditis 
+#	44	 Pericarditis 
+#	45	 Heart failure                  - exclude
+#	46	 Interstitial Nephritis 
+#	47	 Glomerulopnephritis 
+#	48	 Interstitial Nephritis 
+#	49	 Immune complex Glomerulonephritis 
+#	50	 Thrombotic microangiopathy     - exclude
+#	51	 Vasculitis                     - exclude
+#	52	 Autoimmune hemolytic anemia    - exclude
+#	53	 Autoimmune neutropenia         - exclude
+#	54	 DIC                            - exclude
+#	55	 Acquired TTP                   - exclude
+#	56	 ITP                           - exclude
+#	57	 Acquired hemophilia           - exclude
+#	58	 Atypical HUS                  - exclude
+#	59	 Aplastic anemia 
+#	60	 Sinusitis                      - exclude
+#	61	 Hearing loss                   - exclude
+#	62	 Uveitis 
+#	63	 Retinal vasculitis             - exclude
+#	64	 Scleritis                      - exclude
+#	65	 Episcleritis                    - exclude
+#	66	 Blepharitis                    - exclude
+#	67	 Dry eye 
+#	68	 Orbital inflammation NOS 
+#	69	 Optic nerve edema               - exclude
+#	70	 Cranial nerve palsy            - exclude
+#	990	 Other
+
+
+
+
+## Other free-text AEs were in AE symptoms field (ae_code = 990)- ignoring these though some should be recoded to be included as a specific AE type
+kable(table(irae_toxdf$ae_symptoms_990))
+
+#	Alopecia universalis   - exclude
+
+#	Arrhythmia        
+
+#	Arthralgia              - exclude
+#	Bronchial Obstruction   - exclude
+#	Chest pain              - exclude
+#	Dementia                - exclude
+
+#	Dermatitis  
+
+#	Diarrhea                -exclude
+#	mouth sores             -exclude
+#	Diverticulitis          -exclude
+#	elevated creatinine     -exclude
+#	Fatigue                 -exclude
+#	Fever                   -exclude
+#	flu-like symptoms and arthalgias after infusion     -exclude
+#	Fungal Pneumonia        -exclude
+#	Hemoptysis              -exclude
+
+#	Hyperthyroidism
+
+#	Hyponatremia            -exclude
+#	Insomnia                -exclude
+#	Mycobacteria            -exclude
+#	Nausea                  -exclude
+#	Vomiting                -exclude
+#	Pleural Effusion        -exclude
+
+#	Pneumonia               -exclude
+
+#	Pseudogout              -exclude
+#	Pulmonary Embolism      -exclude
+
+#	secondary adrenal insufficiency
+
+#	thrombocytopenia        -exclude
+#	Viral infection         -exclude
+#	Viral Pneumonia         -exclude
+
+
+
+## Create vector of ae_type values that correspond to AE of interest
+irae_codes_1 <- c("2", "4", "5", "6", "8", "9", "10", "11", "20", "21", "22", "72", "24", "25", "27", "28", "29", "36", "37", "40", "41", "43", "44", "46", "47", "48", "49", "59", "62", "67", "68")
+
+dim(irae_attrib_ici_pmap) #141 total toxicities
+
+## Create tox_test column with status of "IRAE" (as defined to correspond to Brown V et al)
+irae_attrib_ici_pmap$tox_gold_1 <- rep(".",140)
+
+## tox_gold_1 = 1 if ae_type is on irae_codes and repeat_instrument = 1 (first IRAE)
+irae_attrib_ici_pmap$tox_gold_1 <- ifelse(irae_attrib_ici_pmap$ae_type %in% irae_codes_1 | irae_attrib_ici_pmap$ae_symptoms_990 %in% c("Arrhythmia", "Dermatitis", "Hyperthyroidism", "secondary adrenal insufficiency"), 1, 0)
+
+## tox_gold_ms1 = 1 if ae_grade is 2 or greater
+irae_attrib_ici_pmap$tox_gold_ms1 <- ifelse(irae_attrib_ici_pmap$tox_gold_1==1 & irae_attrib_ici_pmap$ae_grade %in% c("2","3","4","5"), 1, 0) 
+
+## tox_gold_s1 = 1 if ae_grade is 3 or greater
+irae_attrib_ici_pmap$tox_gold_s1 <- ifelse(irae_attrib_ici_pmap$tox_gold_1==1 & irae_attrib_ici_pmap$ae_grade %in% c("3","4","5"), 1, 0) 
+
+## tox_gold_pc1 = 1 if pneumonitis or colitis or hepatitis
+irae_attrib_ici_pmap$tox_gold_pc1 <- ifelse(irae_attrib_ici_pmap$ae_type %in% c("41", "24", "25"), 1, 0)
+
+## tox_gold_pcms1 = 1 if pnuem/col/hep and moderate/severe
+irae_attrib_ici_pmap$tox_gold_pcms1 <- ifelse(irae_attrib_ici_pmap$ae_type %in% c("41", "24", "25") & irae_attrib_ici_pmap$ae_grade %in% c("2","3","4","5"), 1, 0) 
+
+## tox_gold_pcs1 = 1 if pnuem/col/hep and severe
+irae_attrib_ici_pmap$tox_gold_pcs1 <- ifelse(irae_attrib_ici_pmap$ae_type %in% c("41", "24", "25") & irae_attrib_ici_pmap$ae_grade %in% c("3","4","5"), 1, 0) 
+
+## Observe no. of IRAE using this definition 
+table(irae_attrib_ici_pmap$tox_gold_1) ## There are 76 toxicities out of 140 (not unique patients)
+table(irae_attrib_ici_pmap$tox_gold_ms1) ## There are 59 MODERATE/SEVERE toxicities out of 141 
+table(irae_attrib_ici_pmap$tox_gold_s1) ## There are 33 SEVERE toxicities out of 141 
+table(irae_attrib_ici_pmap$tox_gold_pc1) ## There are 54 cases of pneumonitis, colitis, or hepatitis out of 141
+table(irae_attrib_ici_pmap$tox_gold_pcms1) ## There are 46 MODERATE/SEVERE cases of pneumonitis, colitis, or hepatitis out of 141
+table(irae_attrib_ici_pmap$tox_gold_pcs1) ## There are 30 SEVERE cases of pneumonitis, colitis, or hepatitis out of 141
+
+
+
+## Restrict to tox assessed first time (there was suspected AE event)
+# irae_tox_assessed_first <- irae_toxdf %>%
+#   filter(redcap_repeat_instance==1) %>%
+#   select(cohort_id, tox_gold)
+
+## If you want to keep all AEs as possible "true" positive (should do this because algorithm allows multiple IRAE per person)
+irae_tox_assessed_1 <- irae_attrib_ici_pmap %>%
+  #select(cohort_id, tox_gold_1, tox_gold_ms1, tox_gold_s1, tox_gold_pc1, tox_gold_pcms1, tox_gold_pcs1, n) %>%
+  group_by(cohort_id) %>%
+  mutate(tox_count_1 = cumsum(tox_gold_1)) %>%
+  mutate(total_tox_1 = max(tox_count_1)) %>%
+  mutate(tox_count_ms1 = cumsum(tox_gold_ms1)) %>%
+  mutate(total_tox_ms1 = max(tox_count_ms1)) %>%
+  mutate(tox_count_s1 = cumsum(tox_gold_s1)) %>%
+  mutate(total_tox_s1 = max(tox_count_s1)) %>%
+  mutate(tox_count_pc1 = cumsum(tox_gold_pc1)) %>%
+  mutate(total_tox_pc1 = max(tox_count_pc1)) %>%
+  mutate(tox_count_pcms1 = cumsum(tox_gold_pcms1)) %>%
+  mutate(total_tox_pcms1 = max(tox_count_pcms1)) %>%
+  mutate(tox_count_pcs1 = cumsum(tox_gold_pcs1)) %>%
+  mutate(total_tox_pcs1 = max(tox_count_pcs1))
+
+
+## Aggregate irAE status: indicates (considering all irAE for a single subject) "true positive" status of irAE
+irae_tox_assessed_1$tox_true_1 = case_when(irae_tox_assessed_1$total_tox_1== 0 ~0,
+                                is.na(irae_tox_assessed_1$total_tox_1) ~0, 
+                                irae_tox_assessed_1$total_tox_1>0 ~1)
+
+irae_tox_assessed_1$tox_true_ms1 = case_when(irae_tox_assessed_1$total_tox_ms1== 0 ~0,
+                                is.na(irae_tox_assessed_1$total_tox_ms1) ~0, 
+                                irae_tox_assessed_1$total_tox_ms1>0 ~1)
+
+irae_tox_assessed_1$tox_true_s1 = case_when(irae_tox_assessed_1$total_tox_s1== 0 ~0,
+                                is.na(irae_tox_assessed_1$total_tox_s1) ~0, 
+                                irae_tox_assessed_1$total_tox_s1>0 ~1)
+
+irae_tox_assessed_1$tox_true_pc1 = case_when(irae_tox_assessed_1$total_tox_pc1== 0 ~0,
+                                is.na(irae_tox_assessed_1$total_tox_pc1) ~0, 
+                                irae_tox_assessed_1$total_tox_pc1>0 ~1)
+
+irae_tox_assessed_1$tox_true_pcms1 = case_when(irae_tox_assessed_1$total_tox_pcms1== 0 ~0,
+                                is.na(irae_tox_assessed_1$total_tox_pcms1) ~0, 
+                                irae_tox_assessed_1$total_tox_pcms1>0 ~1)
+
+irae_tox_assessed_1$tox_true_pcs1 = case_when(irae_tox_assessed_1$total_tox_pcs1== 0 ~0,
+                                is.na(irae_tox_assessed_1$total_tox_pcs1) ~0, 
+                                irae_tox_assessed_1$total_tox_pcs1>0 ~1)
+
+
+## Keep only columns that describe aggregate irAE status 
+irae_tox_assessed_1 <- irae_tox_assessed_1 %>%
+    select(cohort_id, tox_true_1, tox_true_ms1, tox_true_s1, tox_true_pc1, tox_true_pcms1, tox_true_pcs1)
+
+## Keep only one row per subject 
+irae_tox_assessed_1_dedupe = irae_tox_assessed_1[!duplicated(irae_tox_assessed_1$cohort_id),]
+
+
+## Add irAE status to patient summary dataframe (AE in merged row might not correspond to overall irAE status if they had more than 1 irAE)
+irae_patdf3 <- left_join(irae_patdf2_covidexc, irae_tox_assessed_1_dedupe, by = "cohort_id")
+
+table(irae_patdf3$tox_true_1) ## 63 experienced irAE of any severity/type
+table(irae_patdf3$tox_true_ms1) ## 51 experienced moderate/severe irAE
+table(irae_patdf3$tox_true_s1) ## 30 experienced severe irAE
+table(irae_patdf3$tox_true_pc1) ## 48 experienced pneumonitis/colitis/hepatitis
+table(irae_patdf3$tox_true_pcms1) ## 41 experienced moderate/severe pneumonitis/colitis/hepatitis
+table(irae_patdf3$tox_true_pcs1) ## 28 experienced severe pneum/col/hep
+
+save(irae_patdf3, file = "irae_patdf3.Rdata")
+
+## Load dataframe if returning to this
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_patdf3.Rdata")
+
+## Merge with ICI exposure dataframe to get ICI index date for included patients
+irae_patdf3_index <- inner_join(irae_patdf3, ICI_rx_index, by = 'cohort_id')
+
+irae_patdf3_index <- irae_patdf3_index %>%
+  mutate(ici_index_yr = year(ordering_date))
+
+save(irae_patdf3_index, file = "irae_patdf3_index.Rdata")
+
+
+## How many prevalent cortico users?
+
+## High dose
+irae_patdf3_prev_cortico <- inner_join(irae_patdf3, prevalent_irae_tx_50, by = "cohort_id")
+
+## 11 on high-dose prednisone or methylprednisolone, 11 on levo (not included)
+
+## Any dose
+irae_patdf3_prev_cortico1 <- inner_join(irae_patdf3, prevalent_irae_tx, by = "cohort_id")
+
+
+```
+
+\
+
+#### Step 3. Test positives
+
+\
+
+#### Algorithm 1 test positives
+
+\
+
+```{r algorithm 1 test positives}
+
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_tx_all_IRAE_1_50.Rdata")
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_tx_all_IRAE_1_50_pc.Rdata")
+
+## Tag individuals who are on list of algorithm1-defined IRAE events
+irae_patdf3$tox_test_1 = rep(".", 441)
+irae_patdf3$tox_test_1 = ifelse(irae_patdf3$cohort_id %in% irae_tx_all_IRAE_1_50$cohort_id, 1, 0)
+
+## Test positive for severe- same as above
+
+## Test positives for pneumonitis colitis and hepatitis
+irae_patdf3$tox_test_pc1 = rep(".", 441)
+irae_patdf3$tox_test_pc1 = ifelse(irae_patdf3$cohort_id %in% irae_tx_all_IRAE_1_50_pc$cohort_id, 1, 0)
+
+
+kable(table(irae_patdf3$tox_test_1)) ## 121 test positives
+kable(table(irae_patdf3$tox_test_pc1)) ## 68 test positives
+```
+
+
+\
+
+#### Algorithm 2 test positives 
+
+\
+
+```{r algorithm 2 test positives}
+## This will be people who match on ICD codes alone (no medication)
+
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/ICI_IRAE_1_dedupe.Rdata")
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/ICI_IRAE_1_dedupe_pc.Rdata")
+
+## Tag individuals who are on list of algorithm1-defined IRAE events (no irae tx necessary)
+irae_patdf3$tox_test_2 = rep(".", 441)
+irae_patdf3$tox_test_2 = ifelse(irae_patdf3$cohort_id %in% ICI_IRAE_1_dedupe$cohort_id, 1, 0)
+
+## Test positive for severe- same as above
+
+## Test positives for pneumonitis and colitis
+irae_patdf3$tox_test_pc2 = rep(".", 441)
+irae_patdf3$tox_test_pc2 = ifelse(irae_patdf3$cohort_id %in% ICI_IRAE_1_dedupe_pc$cohort_id, 1, 0)
+
+
+kable(table(irae_patdf3$tox_test_2)) ## 352 test positives
+kable(table(irae_patdf3$tox_test_pc2)) ## 151 test positives
+```
+
+\
+
+#### Algorithm 3 test positives 
+
+\
+
+```{r algorithm 3 test positives}
+## this is anyone who initiated irae tx subsequent to ICI index date (no ICD dx codes)
+
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_tx_at_50_dedupe.Rdata")
+
+
+## Tag individuals who are on list of algorithm1-defined IRAE events
+irae_patdf3$tox_test_3 = rep(".", 441)
+irae_patdf3$tox_test_3 = ifelse(irae_patdf3$cohort_id %in% irae_tx_at_50_dedupe$cohort_id, 1, 0)
+
+## Test positive for severe, and pneumonitis/colitis/hepatitis- same as above
+
+kable(table(irae_patdf3$tox_test_3)) ## 157 test positives
+```
+
+\
+
+#### Algorithm 4 test positives 
+
+\
+
+```{r algorithm 4 test positives}
+
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_tx_IRAE4_50.Rdata")
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_tx_IRAE4_50_pc.Rdata")
+
+## Tag individuals who are on list of algorithm1-defined IRAE events
+irae_patdf3$tox_test_4 = rep(".", 441)
+irae_patdf3$tox_test_4 = ifelse(irae_patdf3$cohort_id %in% irae_tx_IRAE4_50$cohort_id, 1, 0)
+
+## Test positive for severe- same as above
+
+## Test positives for pneumonitis colitis and hepatitis
+irae_patdf3$tox_test_pc4 = rep(".", 441)
+irae_patdf3$tox_test_pc4 = ifelse(irae_patdf3$cohort_id %in% irae_tx_IRAE4_50_pc$cohort_id, 1, 0)
+
+
+kable(table(irae_patdf3$tox_test_4)) ## 144 test positives
+kable(table(irae_patdf3$tox_test_pc4)) ## 90 test positives
+```
+
+
+\
+
+#### Algorithm 5 test positives 
+
+\
+
+```{r algorithm 5 test positives}
+## Those with ICI discontinuation after suspected irAE
+
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_tx_all_IRAE_1_50_rechalleng_excl.Rdata")
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_tx_all_IRAE_1_50_rechalleng_excl_pc.Rdata")
+
+
+## Tag individuals who are on list of algorithm3-defined IRAE events
+irae_patdf3$tox_test_5 = rep(".", 441)
+irae_patdf3$tox_test_5 = ifelse(irae_patdf3$cohort_id %in% irae_tx_all_IRAE_1_50_rechalleng_excl$cohort_id, 1, 0)
+
+## Test positive for severe- same as above
+
+## Test positives for pneumonitis and colitis
+irae_patdf3$tox_test_pc5 = rep(".", 441)
+irae_patdf3$tox_test_pc5 = ifelse(irae_patdf3$cohort_id %in% irae_tx_all_IRAE_1_50_rechalleng_excl_pc$cohort_id, 1, 0)
+
+kable(table(irae_patdf3$tox_test_5)) ## 117 test positives
+kable(table(irae_patdf3$tox_test_pc5)) ## 64 test positives
+```
+
+
+
+\
+
+#### Step 4. Validation metrics
+
+\
+
+```{r replace NA with 0 }
+## Replace "NA" with "0" for toxicity indicators
+
+## True status
+irae_patdf3$tox_true_1[is.na(irae_patdf3$tox_true_1)] <- 0
+irae_patdf3$tox_true_ms1[is.na(irae_patdf3$tox_true_ms1)] <- 0
+irae_patdf3$tox_true_s1[is.na(irae_patdf3$tox_true_s1)] <- 0
+irae_patdf3$tox_true_pc1[is.na(irae_patdf3$tox_true_pc1)] <- 0
+irae_patdf3$tox_true_pcms1[is.na(irae_patdf3$tox_true_pcms1)] <- 0
+irae_patdf3$tox_true_pcs1[is.na(irae_patdf3$tox_true_pcs1)] <- 0
+
+
+save(irae_patdf3, file = "irae_patdf3.Rdata")
+
+## Load dataframe if returning to this
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_patdf3.Rdata")
+```
+
+
+\
+
+#### Algorithm 1 (Dx/Rx) validation metrics
+
+\
+
+
+```{r algorithm 1 validation metric}
+###
+install.packages("Epi")
+install.packages("pROC")
+install.packages("DescTools")
+library(Epi) # for c-statistic
+library(pROC)
+library(DescTools)
+
+
+
+# https://stackoverflow.com/questions/62238336/how-can-i-find-the-c-ctatistic-or-auroc-using-logistic-regression-in-r
+
+## Calc metrics
+t1 <- table(irae_patdf3$tox_true_1, irae_patdf3$tox_test_1)
+colnames(t1) = c("test.neg", "test.pos")
+rownames(t1) = c("true.neg", "true.pos")
+
+
+v1_se = round(t1[2,2] / (t1[2,2] + t1[2,1]),3)*100
+v1_sp = round(t1[1,1] / (t1[1,1] + t1[1,2]),3)*100
+v1_ppv = round(t1[2,2] / (t1[2,2] + t1[1,2]),3)*100
+v1_npv = round(t1[1,1] / (t1[1,1] + t1[2,1]),3)*100
+
+## Confidence intervals: 
+
+    ## Se
+    v1_seSE = sqrt((v1_se/100)*(1-(v1_se/100))/(t1[2,2] + t1[2,1]))
+    
+    v1_se_lc = round(((v1_se/100) - 1.96*v1_seSE)*100,1)
+    v1_se_uc = round(((v1_se/100) + 1.96*v1_seSE)*100,1)
+    
+    v1_se_t <- str_c(v1_se,'% (',v1_se_lc,'-',v1_se_uc,')')
+    
+    ## Sp
+    v1_spSE = sqrt((v1_sp/100)*(1-(v1_sp/100))/(t1[1,1] + t1[1,2]))
+    
+    v1_sp_lc = round(((v1_sp/100) - 1.96*v1_spSE)*100,1)
+    v1_sp_uc = round(((v1_sp/100) + 1.96*v1_spSE)*100,1)
+    
+    v1_sp_t <- str_c(v1_sp,'% (',v1_sp_lc,'-',v1_sp_uc,')')
+    
+    ## PPV
+    v1_ppvSE = sqrt((v1_ppv/100)*(1-(v1_ppv/100))/(t1[2,2] + t1[1,2]))
+    
+    v1_ppv_lc = round(((v1_ppv/100) - 1.96*v1_ppvSE)*100,1)
+    v1_ppv_uc = round(((v1_ppv/100) + 1.96*v1_ppvSE)*100,1)
+    
+    v1_ppv_t <- str_c(v1_ppv,'% (',v1_ppv_lc,'-',v1_ppv_uc,')')
+    
+    ## NPV
+    v1_npvSE = sqrt((v1_npv/100)*(1-(v1_npv/100))/(t1[1,1] + t1[2,1]))
+    
+    v1_npv_lc = round(((v1_npv/100) - 1.96*v1_npvSE)*100,1)
+    v1_npv_uc = round(((v1_npv/100) + 1.96*v1_npvSE)*100,1)
+    
+    v1_npv_t <- str_c(v1_npv,'% (',v1_npv_lc,'-',v1_npv_uc,')')
+
+
+
+v1_glm = glm(tox_true_1~tox_test_1, data = irae_patdf3, family = binomial())
+
+v1_c <- round(Cstat(v1_glm),2)
+
+# calculating bootstrap confidence intervals
+FUN <- function(d.set, i) {
+   v1_glm <- glm(tox_true_1 ~ tox_test_1, data=d.set[i,], family=binomial)
+   Cstat(v1_glm)
+   }
+
+## Not run:
+library(boot)
+boot.res <- boot(irae_patdf3, FUN, R=999)
+
+# the percentile confidence intervals
+v1_boot <- boot.ci(boot.res, type="perc")
+v1_c_lc <- round(as.data.frame(v1_boot[4])[,4],2)
+v1_c_uc <- round(as.data.frame(v1_boot[4])[,5],2)
+
+v1_c_ci <- str_c(v1_c,'% (',v1_c_lc,'-',v1_c_uc,')')
+
+## Plotting the ROC Curve
+
+library(ggplot2)
+
+ggroc(roc(irae_patdf3$tox_true_1, irae_patdf3$tox_test_1)) +
+  theme_minimal() +
+  ggtitle("ROC- IRAE Algorithm 1") +
+  geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")
+
+
+
+v1_performance = data.frame(metric = c("Se", "Sp", "PPV", "NPV", "C-stat"),
+                            result = c(v1_se_t, v1_sp_t, v1_ppv_t, v1_npv_t, v1_c_ci))
+v1_performance
+
+v1_performance_resultonly = data.frame(result = c(v1_se_t, v1_sp_t, v1_ppv_t, v1_npv_t, v1_c_ci))
+v1_performance_resultonly
+```
+
+\
+
+#### True positives: what was detected by Dx/Rx algorithm?
+
+\
+
+```{r algorithm 1 true positive assessment}
+## True positives
+alg1_truepos = filter(irae_patdf3, tox_true_1==1 & tox_test_1==1)
+length(unique(alg1_truepos$cohort_id)) # 34 true positive patients 
+
+## Look at toxicity table for patients on this list 
+alg1_truepos_tox <- filter(irae_attrib_ici_pmap, cohort_id %in% alg1_truepos$cohort_id & !is.na(ae_date))
+
+## Frequency table: AE type/grade of missed irAEs
+kable(table(alg1_truepos_tox$ae_name, alg1_truepos_tox$ae_grade))
+
+## Pull diagnosis/medication lists for those false negatives
+alg1_truepos_diaglist <- filter(irae_tx_all_IRAE_1_50_pc, cohort_id %in% alg1_truepos$cohort_id)
+```
+
+
+
+#### Look at false negatives  and false positives from this algorithm (all irAE....)
+
+```{r algorithm 1 false negative assessment}
+
+## False negatives
+alg1_falseneg = filter(irae_patdf3, tox_true_1==1 & tox_test_1==0)
+length(unique(alg1_falseneg$cohort_id)) # 29 false negative patients 
+
+## Look at toxicity table for patients on this list 
+alg1_falseneg_tox <- filter(irae_attrib_ici_pmap, cohort_id %in% alg1_falseneg$cohort_id & tox_gold_1 ==1)
+
+## Frequency table: AE type/grade of missed irAEs
+kable(table(alg1_falseneg_tox$ae_name, alg1_falseneg_tox$ae_grade))
+
+## Pull diagnosis/medication lists for those false negatives
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_tx_at_50_dedupe.Rdata")
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/pat_dx_all_oct2020.Rdata")
+
+alg1_falseneg_diaglist <- filter(pat_dx_all_oct2020, cohort_id %in% alg1_falseneg$cohort_id)
+alg1_falseneg_medlist <- filter(irae_tx_at_50_dedupe, cohort_id %in% alg1_falseneg$cohort_id)
+
+
+  # Look specifically at false negative pneumonitis
+  alg1_falseneg_pneumonitis <- filter(alg1_falseneg_tox,ae_type =='41')
+  
+  length(unique(alg1_falseneg_pneumonitis$cohort_id))
+  # 13 patients
+  
+     save(alg1_falseneg_pneumonitis, file = "alg1_falseneg_pneumonitis.Rdata")
+  
+  # Look at diag list of false negative pneumonitis
+     pneumonitis <- c('J18.9', 'J84.89')
+  alg1_falseneg_pneum_diag <- filter(alg1_falseneg_diaglist, icd10_code %in% pneumonitis & cohort_id %in% alg1_falseneg_pneumonitis$cohort_id)
+  
+  length(unique(alg1_falseneg_pneum_diag$cohort_id))
+  # 8 patients from this list with a pneumonitis diag
+  
+    save(alg1_falseneg_pneum_diag, file = "alg1_falseneg_pneum_diag.Rdata")
+  
+  # Look at medication list of false negative pneumonitis
+  alg1_falseneg_pneum_meds <- filter(alg1_falseneg_medlist, cohort_id %in% alg1_falseneg_pneumonitis$cohort_id)
+  
+  length(unique(alg1_falseneg_pneum_meds$cohort_id))
+  # 4 patients from this list with any irAE medication 
+  
+      save(alg1_falseneg_pneum_meds, file = "alg1_falseneg_pneum_meds.Rdata")
+
+
+## False positives
+alg1_falsepos = filter(irae_patdf3, tox_true_1==0 & tox_test_1==1)
+length(unique(alg1_falsepos$cohort_id)) #  87 false positive patients
+
+
+## Pull diagnosis/medication lists for those false negatives
+alg1_falsepos_diaglist <- filter(irae_tx_all_IRAE_1_50, cohort_id %in% alg1_falsepos$cohort_id) ## 23464 rows... meaning 23464 diag/med matches. Some of these are duplicates of the same irAE. 
+
+## Remove rows with duplicate cohort_id, diagnosis, and medication
+alg1_falsepos_diaglist_dedupe <- alg1_falsepos_diaglist[!duplicated(alg1_falsepos_diaglist[c(1,4,11)]),] # 547 records.. better
+
+kable(table(alg1_falsepos_diaglist_dedupe$cohort_id, alg1_falsepos_diaglist_dedupe$icd10_code))
+
+## Count number of patients with at least one: 
+
+# Aplastic anemia (D61.810	D61.818	D61.9	D72.810)
+anemia <- c('D61.810',	'D61.818',	'D61.9',	'D72.810')
+anem_falsepos <- filter(alg1_falsepos_diaglist_dedupe, icd10_code %in% anemia)
+length(unique(anem_falsepos$cohort_id)) 
+# 8 individuals
+
+# Thyroiditis (E03.2	E03.8	E03.9	E05.00	E05.20	E05.90)
+thyroid <- c('E03.2',	'E03.8',	'E03.9',	'E05.00',	'E05.20',	'E05.90')
+thy_falsepos <- filter(alg1_falsepos_diaglist_dedupe, icd10_code %in% thyroid)
+length(unique(thy_falsepos$cohort_id)) 
+# 45 individuals
+
+
+# Diabetes (E11.22	E11.319	E11.36	E11.42	E11.51	E11.649	E11.65	E11.8	E11.9)
+diabetes <- c('E11.22',	'E11.319',	'E11.36',	'E11.42',	'E11.51',	'E11.649',	'E11.65',	'E11.8',	'E11.9')
+diab_falsepos <- filter(alg1_falsepos_diaglist_dedupe, icd10_code %in% diabetes)
+length(unique(diab_falsepos$cohort_id)) 
+# 16 individuals
+
+# Adrenal insufficiency (E27.3	E27.40	E27.49	E27.8	E27.9)
+adrenal <- c('E27.3',	'E27.40',	'E27.49',	'E27.8',	'E27.9')
+adr_falsepos <- filter(alg1_falsepos_diaglist_dedupe, icd10_code %in% adrenal)
+length(unique(adr_falsepos$cohort_id))
+# 12 individuals
+
+# Encephalitis (G04.81	G04.90)
+encephalitis <- c('G04.81',	'G04.90')
+enc_falsepos <- filter(alg1_falsepos_diaglist_dedupe, icd10_code %in% encephalitis)
+length(unique(enc_falsepos$cohort_id))
+# 1 patient
+
+# Eye Pain (H57.13)
+# 1 patient
+
+
+# Cardiac arrhythmia (I49.3	I49.5	I49.8	I49.9)
+cardiac <- c('I49.3',	'I49.5',	'I49.8',	'I49.9')
+card_falsepos <- filter(alg1_falsepos_diaglist_dedupe, icd10_code %in% cardiac)
+length(unique(card_falsepos$cohort_id))
+# 7 individuals
+
+
+# Pneumonitis (J18.9, J84.89)
+pneumonitis <- c('J18.9', 'J84.89')
+pneum_falsepos <- filter(alg1_falsepos_diaglist_dedupe, icd10_code %in% pneumonitis)
+length(unique(pneum_falsepos$cohort_id)) 
+# 32 individuals
+
+# Crohn's Disease (K50.90)
+# 1 patient
+
+# Colitis (K51.90, K52.1, K52.9)
+colitis <- c('K51.90', 'K52.1', 'K52.9')
+col_falsepos <- filter(alg1_falsepos_diaglist_dedupe, icd10_code %in% colitis)
+length(unique(col_falsepos$cohort_id)) 
+# 6 individuals
+
+# Hepatitis (K75.4, K75.9)
+hepatitis <- c('K75.4', 'K75.9')
+hep_falsepos <- filter(alg1_falsepos_diaglist_dedupe, icd10_code %in% hepatitis)
+length(unique(hep_falsepos$cohort_id)) 
+# 5 individuals
+
+# Rash/Inflammatory Dermatitis (L20.9	L27.0	L27.1	L30.8	L30.9 R21)
+rash <- c('L20.9',	'L27.0',	'L27.1',	'L30.8',	'L30.9', 'R21')
+rash_falsepos <- filter(alg1_falsepos_diaglist_dedupe, icd10_code %in% rash)
+length(unique(rash_falsepos$cohort_id)) 
+# 22 individuals
+
+# Kidney (N28.9)
+nephropathy <- 'N28.9'
+neph_falsepos <- filter(alg1_falsepos_diaglist_dedupe, icd10_code %in% nephropathy)
+length(unique(neph_falsepos$cohort_id)) 
+# 4 individuals
+
+
+
+```
+
+\
+
+#### Algorithm 1- severe IRAE only 
+
+\
+
+```{r algorithm 1s validation metrics}
+## Calc metrics
+t1s <- table(irae_patdf3$tox_true_s1, irae_patdf3$tox_test_1)
+colnames(t1s) = c("test.neg", "test.pos")
+rownames(t1s) = c("true.neg", "true.pos")
+
+v1s_se = round(t1s[2,2] / (t1s[2,2] + t1s[2,1]),3)*100
+v1s_sp = round(t1s[1,1] / (t1s[1,1] + t1s[1,2]),3)*100
+v1s_ppv = round(t1s[2,2] / (t1s[2,2] + t1s[1,2]),3)*100
+v1s_npv = round(t1s[1,1] / (t1s[1,1] + t1s[2,1]),3)*100
+
+## Confidence intervals: 
+
+    ## Se
+    v1s_seSE = sqrt((v1s_se/100)*(1-(v1s_se/100))/(t1s[2,2] + t1s[2,1]))
+    
+    v1s_se_lc = round(((v1s_se/100) - 1.96*v1s_seSE)*100,1)
+    v1s_se_uc = round(((v1s_se/100) + 1.96*v1s_seSE)*100,1)
+    
+    v1s_se_t <- str_c(v1s_se,'% (',v1s_se_lc,'-',v1s_se_uc,')')
+    
+    ## Sp
+    v1s_spSE = sqrt((v1s_sp/100)*(1-(v1s_sp/100))/(t1s[1,1] + t1s[1,2]))
+    
+    v1s_sp_lc = round(((v1s_sp/100) - 1.96*v1s_spSE)*100,1)
+    v1s_sp_uc = round(((v1s_sp/100) + 1.96*v1s_spSE)*100,1)
+    
+    v1s_sp_t <- str_c(v1s_sp,'% (',v1s_sp_lc,'-',v1s_sp_uc,')')
+    
+    ## PPV
+    v1s_ppvSE = sqrt((v1s_ppv/100)*(1-(v1s_ppv/100))/(t1s[2,2] + t1s[1,2]))
+    
+    v1s_ppv_lc = round(((v1s_ppv/100) - 1.96*v1s_ppvSE)*100,1)
+    v1s_ppv_uc = round(((v1s_ppv/100) + 1.96*v1s_ppvSE)*100,1)
+    
+    v1s_ppv_t <- str_c(v1s_ppv,'% (',v1s_ppv_lc,'-',v1s_ppv_uc,')')
+    
+    ## NPV
+    v1s_npvSE = sqrt((v1s_npv/100)*(1-(v1s_npv/100))/(t1s[1,1] + t1s[2,1]))
+    
+    v1s_npv_lc = round(((v1s_npv/100) - 1.96*v1s_npvSE)*100,1)
+    v1s_npv_uc = round(((v1s_npv/100) + 1.96*v1s_npvSE)*100,1)
+    
+    v1s_npv_t <- str_c(v1s_npv,'% (',v1s_npv_lc,'-',v1s_npv_uc,')')
+
+v1s_glm = glm(tox_true_s1~tox_test_1, data = irae_patdf3, family = binomial())
+
+v1s_c <- round(Cstat(v1s_glm),2)
+
+# calculating bootstrap confidence intervals
+FUN <- function(d.set, i) {
+   v1s_glm <- glm(tox_true_s1 ~ tox_test_1, data=d.set[i,], family=binomial)
+   Cstat(v1s_glm)
+   }
+
+## Not run:
+library(boot)
+boot.res <- boot(irae_patdf3, FUN, R=999)
+
+# the percentile confidence intervals
+v1s_boot <- boot.ci(boot.res, type="perc")
+v1s_c_lc <- round(as.data.frame(v1s_boot[4])[,4],2)
+v1s_c_uc <- round(as.data.frame(v1s_boot[4])[,5],2)
+
+v1s_c_ci <- str_c(v1s_c,'% (',v1s_c_lc,'-',v1s_c_uc,')')
+
+## Plotting the ROC Curve
+
+# library(ggplot2)
+# 
+# ggroc(roc(irae_patdf3$tox_true_s1, irae_patdf3$tox_test_1)) +
+#   theme_minimal() +
+#   ggtitle("ROC- IRAE Algorithm 1- Severe") +
+#   geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")
+
+
+
+
+
+v1s_performance = data.frame(metric = c("Se", "Sp", "PPV", "NPV", "C-stat"),
+                            result = c(v1s_se_t, v1s_sp_t, v1s_ppv_t, v1s_npv_t, v1s_c_ci))
+v1s_performance
+
+v1s_performance_resultonly = data.frame(result = c(v1s_se_t, v1s_sp_t, v1s_ppv_t, v1s_npv_t, v1s_c_ci))
+v1s_performance_resultonly
+```
+
+\
+
+#### Algorithm 1- penumonitis and colitis only 
+
+\
+
+```{r algorithm 1pc validation metrics}
+## Calc metrics
+t1pc <- table(irae_patdf3$tox_true_pc1, irae_patdf3$tox_test_pc1)
+colnames(t1pc) = c("test.neg", "test.pos")
+rownames(t1pc) = c("true.neg", "true.pos")
+
+v1pc_se = round(t1pc[2,2] / (t1pc[2,2] + t1pc[2,1]),3)*100
+v1pc_sp = round(t1pc[1,1] / (t1pc[1,1] + t1pc[1,2]),3)*100
+v1pc_ppv = round(t1pc[2,2] / (t1pc[2,2] + t1pc[1,2]),3)*100
+v1pc_npv = round(t1pc[1,1] / (t1pc[1,1] + t1pc[2,1]),3)*100
+
+
+## Confidence intervals: 
+
+    ## Se
+    v1pc_seSE = sqrt((v1pc_se/100)*(1-(v1pc_se/100))/(t1pc[2,2] + t1pc[2,1]))
+    
+    v1pc_se_lc = round(((v1pc_se/100) - 1.96*v1pc_seSE)*100,1)
+    v1pc_se_uc = round(((v1pc_se/100) + 1.96*v1pc_seSE)*100,1)
+    
+    v1pc_se_t <- str_c(v1pc_se,'% (',v1pc_se_lc,'-',v1pc_se_uc,')')
+    
+    ## Sp
+    v1pc_spSE = sqrt((v1pc_sp/100)*(1-(v1pc_sp/100))/(t1pc[1,1] + t1pc[1,2]))
+    
+    v1pc_sp_lc = round(((v1pc_sp/100) - 1.96*v1pc_spSE)*100,1)
+    v1pc_sp_uc = round(((v1pc_sp/100) + 1.96*v1pc_spSE)*100,1)
+    
+    v1pc_sp_t <- str_c(v1pc_sp,'% (',v1pc_sp_lc,'-',v1pc_sp_uc,')')
+    
+    ## PPV
+    v1pc_ppvSE = sqrt((v1pc_ppv/100)*(1-(v1pc_ppv/100))/(t1pc[2,2] + t1pc[1,2]))
+    
+    v1pc_ppv_lc = round(((v1pc_ppv/100) - 1.96*v1pc_ppvSE)*100,1)
+    v1pc_ppv_uc = round(((v1pc_ppv/100) + 1.96*v1pc_ppvSE)*100,1)
+    
+    v1pc_ppv_t <- str_c(v1pc_ppv,'% (',v1pc_ppv_lc,'-',v1pc_ppv_uc,')')
+    
+    ## NPV
+    v1pc_npvSE = sqrt((v1pc_npv/100)*(1-(v1pc_npv/100))/(t1pc[1,1] + t1pc[2,1]))
+    
+    v1pc_npv_lc = round(((v1pc_npv/100) - 1.96*v1pc_npvSE)*100,1)
+    v1pc_npv_uc = round(((v1pc_npv/100) + 1.96*v1pc_npvSE)*100,1)
+    
+    v1pc_npv_t <- str_c(v1pc_npv,'% (',v1pc_npv_lc,'-',v1pc_npv_uc,')')
+
+v1pc_glm = glm(tox_true_pc1~tox_test_pc1, data = irae_patdf3, family = binomial())
+
+v1pc_c <- round(Cstat(v1pc_glm),2)
+
+# calculating bootstrap confidence intervals
+FUN <- function(d.set, i) {
+   v1pc_glm <- glm(tox_true_pc1 ~ tox_test_pc1, data=d.set[i,], family=binomial)
+   Cstat(v1pc_glm)
+   }
+
+## Not run:
+library(boot)
+boot.res <- boot(irae_patdf3, FUN, R=999)
+
+# the percentile confidence intervals
+v1pc_boot <- boot.ci(boot.res, type="perc")
+v1pc_c_lc <- round(as.data.frame(v1pc_boot[4])[,4],2)
+v1pc_c_uc <- round(as.data.frame(v1pc_boot[4])[,5],2)
+
+v1pc_c_ci <- str_c(v1pc_c,'% (',v1pc_c_lc,'-',v1pc_c_uc,')')
+
+## Plotting the ROC Curve
+
+# library(ggplot2)
+# 
+# ggroc(roc(irae_patdf3$tox_true_pc1, irae_patdf3$tox_test_pc1)) +
+#   theme_minimal() +
+#   ggtitle("ROC- IRAE Algorithm 1- Pneumonitis and Colitis") +
+#   geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")
+
+
+
+
+
+v1pc_performance = data.frame(metric = c("Se", "Sp", "PPV", "NPV", "C-stat"),
+                            result = c(v1pc_se_t, v1pc_sp_t, v1pc_ppv_t, v1pc_npv_t, v1pc_c_ci))
+v1pc_performance
+
+v1pc_performance_resultonly = data.frame(result = c(v1pc_se_t, v1pc_sp_t, v1pc_ppv_t, v1pc_npv_t, v1pc_c_ci))
+v1pc_performance_resultonly
+```
+
+\
+
+#### Algorithm 1- SEVERE pneum/col only
+
+\
+
+```{r algorithm 1pcs validation metrics}
+## Calc metrics
+t1pcs <- table(irae_patdf3$tox_true_pcs1, irae_patdf3$tox_test_pc1)
+colnames(t1pcs) = c("test.neg", "test.pos")
+rownames(t1pcs) = c("true.neg", "true.pos")
+
+
+v1pcs_se = round(t1pcs[2,2] / (t1pcs[2,2] + t1pcs[2,1]),3)*100
+v1pcs_sp = round(t1pcs[1,1] / (t1pcs[1,1] + t1pcs[1,2]),3)*100
+v1pcs_ppv = round(t1pcs[2,2] / (t1pcs[2,2] + t1pcs[1,2]),3)*100
+v1pcs_npv = round(t1pcs[1,1] / (t1pcs[1,1] + t1pcs[2,1]),3)*100
+
+
+## Confidence intervals: 
+
+    ## Se
+    v1pcs_seSE = sqrt((v1pcs_se/100)*(1-(v1pcs_se/100))/(t1pcs[2,2] + t1pcs[2,1]))
+    
+    v1pcs_se_lc = round(((v1pcs_se/100) - 1.96*v1pcs_seSE)*100,1)
+    v1pcs_se_uc = round(((v1pcs_se/100) + 1.96*v1pcs_seSE)*100,1)
+    
+    v1pcs_se_t <- str_c(v1pcs_se,'% (',v1pcs_se_lc,'-',v1pcs_se_uc,')')
+    
+    ## Sp
+    v1pcs_spSE = sqrt((v1pcs_sp/100)*(1-(v1pcs_sp/100))/(t1pcs[1,1] + t1pcs[1,2]))
+    
+    v1pcs_sp_lc = round(((v1pcs_sp/100) - 1.96*v1pcs_spSE)*100,1)
+    v1pcs_sp_uc = round(((v1pcs_sp/100) + 1.96*v1pcs_spSE)*100,1)
+    
+    v1pcs_sp_t <- str_c(v1pcs_sp,'% (',v1pcs_sp_lc,'-',v1pcs_sp_uc,')')
+    
+    ## PPV
+    v1pcs_ppvSE = sqrt((v1pcs_ppv/100)*(1-(v1pcs_ppv/100))/(t1pcs[2,2] + t1pcs[1,2]))
+    
+    v1pcs_ppv_lc = round(((v1pcs_ppv/100) - 1.96*v1pcs_ppvSE)*100,1)
+    v1pcs_ppv_uc = round(((v1pcs_ppv/100) + 1.96*v1pcs_ppvSE)*100,1)
+    
+    v1pcs_ppv_t <- str_c(v1pcs_ppv,'% (',v1pcs_ppv_lc,'-',v1pcs_ppv_uc,')')
+    
+    ## NPV
+    v1pcs_npvSE = sqrt((v1pcs_npv/100)*(1-(v1pcs_npv/100))/(t1pcs[1,1] + t1pcs[2,1]))
+    
+    v1pcs_npv_lc = round(((v1pcs_npv/100) - 1.96*v1pcs_npvSE)*100,1)
+    v1pcs_npv_uc = round(((v1pcs_npv/100) + 1.96*v1pcs_npvSE)*100,1)
+    
+    v1pcs_npv_t <- str_c(v1pcs_npv,'% (',v1pcs_npv_lc,'-',v1pcs_npv_uc,')')
+
+v1pcs_glm = glm(tox_true_pcs1~tox_test_pc1, data = irae_patdf3, family = binomial())
+
+v1pcs_c <- round(Cstat(v1pcs_glm),2)
+
+# calculating bootstrap confidence intervals
+FUN <- function(d.set, i) {
+   v1pcs_glm <- glm(tox_true_pcs1 ~ tox_test_pc1, data=d.set[i,], family=binomial)
+   Cstat(v1pcs_glm)
+   }
+   
+## Not run: 
+library(boot)
+boot.res <- boot(irae_patdf3, FUN, R=999) 
+
+# the percentile confidence intervals
+v1pcs_boot <- boot.ci(boot.res, type="perc")
+v1pcs_c_lc <- round(as.data.frame(v1pcs_boot[4])[,4],2)
+v1pcs_c_uc <- round(as.data.frame(v1pcs_boot[4])[,5],2)
+
+v1pcs_c_ci <- str_c(v1pcs_c,'% (',v1pcs_c_lc,'-',v1pcs_c_uc,')')
+
+## Plotting the ROC Curve
+# 
+# library(ggplot2)
+# 
+# ggroc(roc(irae_patdf3$tox_true_pcs1, irae_patdf3$tox_test_pc1)) +
+#   theme_minimal() + 
+#   ggtitle("ROC- IRAE Algorithm 1- Pneumonitis and Colitis- SEVERE") + 
+#   geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")
+# 
+# v1pcs_c1 <- str_c(v1pcs_c,' (',v1pcs_c_ci,')')
+
+
+
+v1pcs_performance = data.frame(metric = c("Se", "Sp", "PPV", "NPV", "C-stat"),
+                            result = c(v1pcs_se_t, v1pcs_sp_t, v1pcs_ppv_t, v1pcs_npv_t, v1pcs_c_ci))
+v1pcs_performance
+
+v1pcs_performance_resultonly = data.frame(result = c(v1pcs_se_t, v1pcs_sp_t, v1pcs_ppv_t, v1pcs_npv_t, v1pcs_c_ci))
+v1pcs_performance_resultonly
+```
+
+\
+
+#### Look at false negatives  and false positives from this algorithm (severe pneumonitis and colitis....)
+
+```{r algorithm 1pcs false negative assessment}
+t1pcs
+alg1pcs_falseneg = filter(irae_patdf1, tox_true_pcs1==1 & tox_test_pc1==0)
+length(unique(alg1pcs_falseneg$cohort_id)) # 21 
+
+## Look at toxicity table for patients on this list 
+alg1pcs_falseneg_tox <- filter(irae_toxdf1, cohort_id %in% alg1pcs_falseneg$cohort_id)
+
+## pneumonitis only
+pneumonitis_falseneg <- alg1pcs_falseneg_tox[alg1pcs_falseneg_tox$ae_type %in% c("41"),]
+
+## Pull diagnosis list for those false negatives
+pneumonitis_falseneg_diaglist <- filter(emr_diagdf, cohort_id %in% pneumonitis_falseneg$cohort_id)
+
+
+alg1pcs_falsepos = filter(irae_patdf1, tox_true_pcs1==0 & tox_test_pc1==1)
+length(unique(alg1pcs_falsepos$cohort_id))
+
+```
+
+
+
+\
+
+#### Algorithm 2 (DX only) Validation metrics
+
+\
+
+```{r algorithm 2 validation metrics}
+## Calc metrics
+t2 <- table(irae_patdf3$tox_true_1, irae_patdf3$tox_test_2)
+colnames(t2) = c("test.neg", "test.pos")
+rownames(t2) = c("true.neg", "true.pos")
+
+v2_se = round(t2[2,2] / (t2[2,2] + t2[2,1]),3)*100
+v2_sp = round(t2[1,1] / (t2[1,1] + t2[1,2]),3)*100
+v2_ppv = round(t2[2,2] / (t2[2,2] + t2[1,2]),3)*100
+v2_npv = round(t2[1,1] / (t2[1,1] + t2[2,1]),3)*100
+
+## Confidence intervals: 
+
+    ## Se
+    v2_seSE = sqrt((v2_se/100)*(1-(v2_se/100))/(t2[2,2] + t2[2,1]))
+    
+    v2_se_lc = round(((v2_se/100) - 1.96*v2_seSE)*100,1)
+    v2_se_uc = round(((v2_se/100) + 1.96*v2_seSE)*100,1)
+    
+    v2_se_t <- str_c(v2_se,'% (',v2_se_lc,'-',v2_se_uc,')')
+    
+    ## Sp
+    v2_spSE = sqrt((v2_sp/100)*(1-(v2_sp/100))/(t2[1,1] + t2[1,2]))
+    
+    v2_sp_lc = round(((v2_sp/100) - 1.96*v2_spSE)*100,1)
+    v2_sp_uc = round(((v2_sp/100) + 1.96*v2_spSE)*100,1)
+    
+    v2_sp_t <- str_c(v2_sp,'% (',v2_sp_lc,'-',v2_sp_uc,')')
+    
+    ## PPV
+    v2_ppvSE = sqrt((v2_ppv/100)*(1-(v2_ppv/100))/(t2[2,2] + t2[1,2]))
+    
+    v2_ppv_lc = round(((v2_ppv/100) - 1.96*v2_ppvSE)*100,1)
+    v2_ppv_uc = round(((v2_ppv/100) + 1.96*v2_ppvSE)*100,1)
+    
+    v2_ppv_t <- str_c(v2_ppv,'% (',v2_ppv_lc,'-',v2_ppv_uc,')')
+    
+    ## NPV
+    v2_npvSE = sqrt((v2_npv/100)*(1-(v2_npv/100))/(t2[1,1] + t2[2,1]))
+    
+    v2_npv_lc = round(((v2_npv/100) - 1.96*v2_npvSE)*100,1)
+    v2_npv_uc = round(((v2_npv/100) + 1.96*v2_npvSE)*100,1)
+    
+    v2_npv_t <- str_c(v2_npv,'% (',v2_npv_lc,'-',v2_npv_uc,')')
+
+
+v2_glm = glm(tox_true_1~tox_test_2, data = irae_patdf3, family = binomial())
+
+v2_c <- round(Cstat(v2_glm),2)
+
+# calculating bootstrap confidence intervals
+FUN <- function(d.set, i) {
+   v2_glm <- glm(tox_true_1 ~ tox_test_2, data=d.set[i,], family=binomial)
+   Cstat(v2_glm)
+   }
+   
+## Not run: 
+library(boot)
+boot.res <- boot(irae_patdf3, FUN, R=999) 
+
+# the percentile confidence intervals
+v2_boot <- boot.ci(boot.res, type="perc")
+v2_c_lc <- round(as.data.frame(v2_boot[4])[,4],2)
+v2_c_uc <- round(as.data.frame(v2_boot[4])[,5],2)
+
+v2_c_ci <- str_c(v2_c,'% (',v2_c_lc,'-',v2_c_uc,')')
+
+## Plotting the ROC Curve
+
+# library(ggplot2)
+# 
+# ggroc(roc(irae_patdf3$tox_true_1, irae_patdf3$tox_test_2)) +
+#   theme_minimal() + 
+#   ggtitle("ROC- IRAE Algorithm 2") + 
+#   geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")
+# 
+# v2_c1 <- str_c(v2_c,' (',v2_c_ci,')')
+
+
+
+v2_performance = data.frame(metric = c("Se", "Sp", "PPV", "NPV", "C-stat"),
+                            result = c(v2_se_t, v2_sp_t, v2_ppv_t, v2_npv_t, v2_c_ci))
+v2_performance
+
+v2_performance_resultonly = data.frame(result = c(v2_se_t, v2_sp_t, v2_ppv_t, v2_npv_t, v2_c_ci))
+v2_performance_resultonly
+```
+
+\
+
+#### Algorithm 2- severe IRAE only 
+
+
+\
+
+```{r algorithm 2s validaiton metrics}
+## Calc metrics
+t2s <- table(irae_patdf3$tox_true_s1, irae_patdf3$tox_test_2)
+colnames(t2s) = c("test.neg", "test.pos")
+rownames(t2s) = c("true.neg", "true.pos")
+
+v2s_se = round(t2s[2,2] / (t2s[2,2] + t2s[2,1]),3)*100
+v2s_sp = round(t2s[1,1] / (t2s[1,1] + t2s[1,2]),3)*100
+v2s_ppv = round(t2s[2,2] / (t2s[2,2] + t2s[1,2]),3)*100
+v2s_npv = round(t2s[1,1] / (t2s[1,1] + t2s[2,1]),3)*100
+
+## Confidence intervals: 
+
+    ## Se
+    v2s_seSE = sqrt((v2s_se/100)*(1-(v2s_se/100))/(t2s[2,2] + t2s[2,1]))
+    
+    v2s_se_lc = round(((v2s_se/100) - 1.96*v2s_seSE)*100,1)
+    v2s_se_uc = round(((v2s_se/100) + 1.96*v2s_seSE)*100,1)
+    
+    v2s_se_t <- str_c(v2s_se,'% (',v2s_se_lc,'-',v2s_se_uc,')')
+    
+    ## Sp
+    v2s_spSE = sqrt((v2s_sp/100)*(1-(v2s_sp/100))/(t2s[1,1] + t2s[1,2]))
+    
+    v2s_sp_lc = round(((v2s_sp/100) - 1.96*v2s_spSE)*100,1)
+    v2s_sp_uc = round(((v2s_sp/100) + 1.96*v2s_spSE)*100,1)
+    
+    v2s_sp_t <- str_c(v2s_sp,'% (',v2s_sp_lc,'-',v2s_sp_uc,')')
+    
+    ## PPV
+    v2s_ppvSE = sqrt((v2s_ppv/100)*(1-(v2s_ppv/100))/(t2s[2,2] + t2s[1,2]))
+    
+    v2s_ppv_lc = round(((v2s_ppv/100) - 1.96*v2s_ppvSE)*100,1)
+    v2s_ppv_uc = round(((v2s_ppv/100) + 1.96*v2s_ppvSE)*100,1)
+    
+    v2s_ppv_t <- str_c(v2s_ppv,'% (',v2s_ppv_lc,'-',v2s_ppv_uc,')')
+    
+    ## NPV
+    v2s_npvSE = sqrt((v2s_npv/100)*(1-(v2s_npv/100))/(t2s[1,1] + t2s[2,1]))
+    
+    v2s_npv_lc = round(((v2s_npv/100) - 1.96*v2s_npvSE)*100,1)
+    v2s_npv_uc = round(((v2s_npv/100) + 1.96*v2s_npvSE)*100,1)
+    
+    v2s_npv_t <- str_c(v2s_npv,'% (',v2s_npv_lc,'-',v2s_npv_uc,')')
+
+v2s_glm = glm(tox_true_s1~tox_test_2, data = irae_patdf3, family = binomial())
+
+v2s_c <- round(Cstat(v2s_glm),2)
+
+# calculating bootstrap confidence intervals
+FUN <- function(d.set, i) {
+   v2s_glm <- glm(tox_true_s1 ~ tox_test_2, data=d.set[i,], family=binomial)
+   Cstat(v2s_glm)
+   }
+   
+## Not run: 
+library(boot)
+boot.res <- boot(irae_patdf3, FUN, R=999) 
+
+# the percentile confidence intervals
+v2s_boot <- boot.ci(boot.res, type="perc")
+v2s_c_lc <- round(as.data.frame(v2s_boot[4])[,4],2)
+v2s_c_uc <- round(as.data.frame(v2s_boot[4])[,5],2)
+
+v2s_c_ci <- str_c(v2s_c,'% (',v2s_c_lc,'-',v2s_c_uc,')')
+
+## Plotting the ROC Curve
+
+# library(ggplot2)
+# 
+# ggroc(roc(irae_patdf3$tox_true_s1, irae_patdf3$tox_test_2)) +
+#   theme_minimal() + 
+#   ggtitle("ROC- IRAE Algorithm 2- Severe IRAE") + 
+#   geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")
+# 
+# v2s_c1 <- str_c(v2s_c,' (',v2s_c_ci,')')
+
+
+
+v2s_performance = data.frame(metric = c("Se", "Sp", "PPV", "NPV", "C-stat"),
+                            result = c(v2s_se_t, v2s_sp_t, v2s_ppv_t, v2s_npv_t, v2s_c_ci))
+v2s_performance
+
+v2s_performance_resultonly = data.frame(result = c(v2s_se_t, v2s_sp_t, v2s_ppv_t, v2s_npv_t, v2s_c_ci))
+v2s_performance_resultonly
+```
+
+\
+
+#### Algorithm 2- pneumonitis and colitis only 
+
+\
+
+```{r algorithm 2pc validaiton metrics}
+## Calc metrics
+t2pc <- table(irae_patdf1$tox_true_pc2, irae_patdf1$tox_test_pc2)
+colnames(t2pc) = c("test.neg", "test.pos")
+rownames(t2pc) = c("true.neg", "true.pos")
+
+v2pc_se = round(t2pc[2,2] / (t2pc[2,2] + t2pc[2,1]),3)*100
+v2pc_sp = round(t2pc[1,1] / (t2pc[1,1] + t2pc[1,2]),3)*100
+v2pc_ppv = round(t2pc[2,2] / (t2pc[2,2] + t2pc[1,2]),3)*100
+v2pc_npv = round(t2pc[1,1] / (t2pc[1,1] + t2pc[2,1]),3)*100
+
+## Confidence intervals
+
+    ## Se
+    v2pc_seSE = sqrt((v2pc_se/100)*(1-(v2pc_se/100))/(t2pc[2,2] + t2pc[2,1]))
+    
+    v2pc_se_lc = round(((v2pc_se/100) - 1.96*v2pc_seSE)*100,1)
+    v2pc_se_uc = round(((v2pc_se/100) + 1.96*v2pc_seSE)*100,1)
+    
+    v2pc_se_t <- str_c(v2pc_se,'% (',v2pc_se_lc,'-',v2pc_se_uc,')')
+    
+    ## Sp
+    v2pc_spSE = sqrt((v2pc_sp/100)*(1-(v2pc_sp/100))/(t2pc[1,1] + t2pc[1,2]))
+    
+    v2pc_sp_lc = round(((v2pc_sp/100) - 1.96*v2pc_spSE)*100,1)
+    v2pc_sp_uc = round(((v2pc_sp/100) + 1.96*v2pc_spSE)*100,1)
+    
+    v2pc_sp_t <- str_c(v2pc_sp,'% (',v2pc_sp_lc,'-',v2pc_sp_uc,')')
+    
+    ## PPV
+    v2pc_ppvSE = sqrt((v2pc_ppv/100)*(1-(v2pc_ppv/100))/(t2pc[2,2] + t2pc[1,2]))
+    
+    v2pc_ppv_lc = round(((v2pc_ppv/100) - 1.96*v2pc_ppvSE)*100,1)
+    v2pc_ppv_uc = round(((v2pc_ppv/100) + 1.96*v2pc_ppvSE)*100,1)
+    
+    v2pc_ppv_t <- str_c(v2pc_ppv,'% (',v2pc_ppv_lc,'-',v2pc_ppv_uc,')')
+    
+    ## NPV
+    v2pc_npvSE = sqrt((v2pc_npv/100)*(1-(v2pc_npv/100))/(t2pc[1,1] + t2pc[2,1]))
+    
+    v2pc_npv_lc = round(((v2pc_npv/100) - 1.96*v2pc_npvSE)*100,1)
+    v2pc_npv_uc = round(((v2pc_npv/100) + 1.96*v2pc_npvSE)*100,1)
+    
+    v2pc_npv_t <- str_c(v2pc_npv,'% (',v2pc_npv_lc,'-',v2pc_npv_uc,')')
+
+v2pc_glm = glm(tox_true_pc2~tox_test_pc2, data = irae_patdf1, family = binomial())
+
+v2pc_c <- round(Cstat(v2pc_glm),2)
+
+# calculating bootstrap confidence intervals
+FUN <- function(d.set, i) {
+   v2pc_glm <- glm(tox_true_pc2 ~ tox_test_pc2, data=d.set[i,], family=binomial)
+   Cstat(v2pc_glm)
+   }
+   
+## Not run: 
+library(boot)
+boot.res <- boot(irae_patdf1, FUN, R=999) 
+
+# the percentile confidence intervals
+v2pc_boot <- boot.ci(boot.res, type="perc")
+v2pc_c_ci <- v2pc_boot[4]
+
+v2pc_boot[4]
+
+## Plotting the ROC Curve
+
+library(ggplot2)
+
+ggroc(roc(irae_patdf1$tox_true_pc2, irae_patdf1$tox_test_pc2)) +
+  theme_minimal() + 
+  ggtitle("ROC- IRAE Algorithm 2- Pneumonitis and Colitis") + 
+  geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")
+
+v2pc_c1 <- str_c(v2pc_c,' (',v2pc_c_ci,')')
+
+
+
+v2pc_performance = data.frame(metric = c("Se", "Sp", "PPV", "NPV", "C-stat"),
+                            result = c(v2pc_se_t, v2pc_sp_t, v2pc_ppv_t, v2pc_npv_t, v2pc_c))
+v2pc_performance
+
+v2pc_performance_resultonly = data.frame(result = c(v2pc_se_t, v2pc_sp_t, v2pc_ppv_t, v2pc_npv_t, v2pc_c))
+v2pc_performance_resultonly
+```
+
+\
+
+#### Algorithm 2= severe penumonitis and oclits 
+
+\
+
+```{r algorithm 2pcs validaiton metrics}
+## Calc metrics
+t2pcs <- table(irae_patdf3$tox_true_pcs1, irae_patdf3$tox_test_pc2)
+colnames(t2pcs) = c("test.neg", "test.pos")
+rownames(t2pcs) = c("true.neg", "true.pos")
+
+v2pcs_se = round(t2pcs[2,2] / (t2pcs[2,2] + t2pcs[2,1]),3)*100
+v2pcs_sp = round(t2pcs[1,1] / (t2pcs[1,1] + t2pcs[1,2]),3)*100
+v2pcs_ppv = round(t2pcs[2,2] / (t2pcs[2,2] + t2pcs[1,2]),3)*100
+v2pcs_npv = round(t2pcs[1,1] / (t2pcs[1,1] + t2pcs[2,1]),3)*100
+
+## Confidence intervals
+
+    ## Se
+    v2pcs_seSE = sqrt((v2pcs_se/100)*(1-(v2pcs_se/100))/(t2pcs[2,2] + t2pcs[2,1]))
+    
+    v2pcs_se_lc = round(((v2pcs_se/100) - 1.96*v2pcs_seSE)*100,1)
+    v2pcs_se_uc = round(((v2pcs_se/100) + 1.96*v2pcs_seSE)*100,1)
+    
+    v2pcs_se_t <- str_c(v2pcs_se,'% (',v2pcs_se_lc,'-',v2pcs_se_uc,')')
+    
+    ## Sp
+    v2pcs_spSE = sqrt((v2pcs_sp/100)*(1-(v2pcs_sp/100))/(t2pcs[1,1] + t2pcs[1,2]))
+    
+    v2pcs_sp_lc = round(((v2pcs_sp/100) - 1.96*v2pcs_spSE)*100,1)
+    v2pcs_sp_uc = round(((v2pcs_sp/100) + 1.96*v2pcs_spSE)*100,1)
+    
+    v2pcs_sp_t <- str_c(v2pcs_sp,'% (',v2pcs_sp_lc,'-',v2pcs_sp_uc,')')
+    
+    ## PPV
+    v2pcs_ppvSE = sqrt((v2pcs_ppv/100)*(1-(v2pcs_ppv/100))/(t2pcs[2,2] + t2pcs[1,2]))
+    
+    v2pcs_ppv_lc = round(((v2pcs_ppv/100) - 1.96*v2pcs_ppvSE)*100,1)
+    v2pcs_ppv_uc = round(((v2pcs_ppv/100) + 1.96*v2pcs_ppvSE)*100,1)
+    
+    v2pcs_ppv_t <- str_c(v2pcs_ppv,'% (',v2pcs_ppv_lc,'-',v2pcs_ppv_uc,')')
+    
+    ## NPV
+    v2pcs_npvSE = sqrt((v2pcs_npv/100)*(1-(v2pcs_npv/100))/(t2pcs[1,1] + t2pcs[2,1]))
+    
+    v2pcs_npv_lc = round(((v2pcs_npv/100) - 1.96*v2pcs_npvSE)*100,1)
+    v2pcs_npv_uc = round(((v2pcs_npv/100) + 1.96*v2pcs_npvSE)*100,1)
+    
+    v2pcs_npv_t <- str_c(v2pcs_npv,'% (',v2pcs_npv_lc,'-',v2pcs_npv_uc,')')
+
+v2pcs_glm = glm(tox_true_pcs1~tox_test_pc2, data = irae_patdf3, family = binomial())
+
+v2pcs_c <- round(Cstat(v2pcs_glm),2)
+
+# calculating bootstrap confidence intervals
+FUN <- function(d.set, i) {
+   v2pcs_glm <- glm(tox_true_pcs1 ~ tox_test_pc2, data=d.set[i,], family=binomial)
+   Cstat(v2pcs_glm)
+   }
+   
+## Not run: 
+library(boot)
+boot.res <- boot(irae_patdf3, FUN, R=999) 
+
+# the percentile confidence intervals
+v2pcs_boot <- boot.ci(boot.res, type="perc")
+v2pcs_c_lc <- round(as.data.frame(v2pcs_boot[4])[,4],2)
+v2pcs_c_uc <- round(as.data.frame(v2pcs_boot[4])[,5],2)
+
+v2pcs_c_ci <- str_c(v2pcs_c,'% (',v2pcs_c_lc,'-',v2pcs_c_uc,')')
+
+## Plotting the ROC Curve
+
+# library(ggplot2)
+# 
+# ggroc(roc(irae_patdf3$tox_true_pcs1, irae_patdf3$tox_test_pc2)) +
+#   theme_minimal() + 
+#   ggtitle("ROC- IRAE Algorithm 2- Pneumonitis and Colitis- SEVERE") + 
+#   geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")
+# 
+# v2pcs_c1 <- str_c(v2pcs_c,' (',v2pcs_c_ci,')')
+
+
+
+v2pcs_performance = data.frame(metric = c("Se", "Sp", "PPV", "NPV", "C-stat"),
+                            result = c(v2pcs_se_t, v2pcs_sp_t, v2pcs_ppv_t, v2pcs_npv_t, v2pcs_c_ci))
+v2pcs_performance
+
+v2pcs_performance_resultonly = data.frame(result = c(v2pcs_se_t, v2pcs_sp_t, v2pcs_ppv_t, v2pcs_npv_t, v2pcs_c_ci))
+v2pcs_performance_resultonly
+```
+
+
+#### Algorithm 3 (Rx Only) validation metrics 
+
+\
+
+```{r algorithm 3 validation metrics}
+## Calc metrics
+t3 <- table(irae_patdf3$tox_true_1, irae_patdf3$tox_test_3)
+colnames(t3) = c("test.neg", "test.pos")
+rownames(t3) = c("true.neg", "true.pos")
+
+v3_se = round(t3[2,2] / (t3[2,2] + t3[2,1]),3)*100
+v3_sp = round(t3[1,1] / (t3[1,1] + t3[1,2]),3)*100
+v3_ppv = round(t3[2,2] / (t3[2,2] + t3[1,2]),3)*100
+v3_npv = round(t3[1,1] / (t3[1,1] + t3[2,1]),3)*100
+
+## Confidence Intervals
+
+    ## Se
+    v3_seSE = sqrt((v3_se/100)*(1-(v3_se/100))/(t3[2,2] + t3[2,1]))
+    
+    v3_se_lc = round(((v3_se/100) - 1.96*v3_seSE)*100,1)
+    v3_se_uc = round(((v3_se/100) + 1.96*v3_seSE)*100,1)
+    
+    v3_se_t <- str_c(v3_se,'% (',v3_se_lc,'-',v3_se_uc,')')
+    
+    ## Sp
+    v3_spSE = sqrt((v3_sp/100)*(1-(v3_sp/100))/(t3[1,1] + t3[1,2]))
+    
+    v3_sp_lc = round(((v3_sp/100) - 1.96*v3_spSE)*100,1)
+    v3_sp_uc = round(((v3_sp/100) + 1.96*v3_spSE)*100,1)
+    
+    v3_sp_t <- str_c(v3_sp,'% (',v3_sp_lc,'-',v3_sp_uc,')')
+    
+    ## PPV
+    v3_ppvSE = sqrt((v3_ppv/100)*(1-(v3_ppv/100))/(t3[2,2] + t3[1,2]))
+    
+    v3_ppv_lc = round(((v3_ppv/100) - 1.96*v3_ppvSE)*100,1)
+    v3_ppv_uc = round(((v3_ppv/100) + 1.96*v3_ppvSE)*100,1)
+    
+    v3_ppv_t <- str_c(v3_ppv,'% (',v3_ppv_lc,'-',v3_ppv_uc,')')
+    
+    ## NPV
+    v3_npvSE = sqrt((v3_npv/100)*(1-(v3_npv/100))/(t3[1,1] + t3[2,1]))
+    
+    v3_npv_lc = round(((v3_npv/100) - 1.96*v3_npvSE)*100,1)
+    v3_npv_uc = round(((v3_npv/100) + 1.96*v3_npvSE)*100,1)
+    
+    v3_npv_t <- str_c(v3_npv,'% (',v3_npv_lc,'-',v3_npv_uc,')')
+
+v3_glm = glm(tox_true_1~tox_test_3, data = irae_patdf3, family = binomial())
+
+v3_c <- round(Cstat(v3_glm),2)
+
+# calculating bootstrap confidence intervals
+FUN <- function(d.set, i) {
+   v3_glm <- glm(tox_true_1 ~ tox_test_3, data=d.set[i,], family=binomial)
+   Cstat(v3_glm)
+   }
+   
+## Not run: 
+library(boot)
+boot.res <- boot(irae_patdf3, FUN, R=999) 
+
+# the percentile confidence intervals
+v3_boot <- boot.ci(boot.res, type="perc")
+v3_c_lc <- round(as.data.frame(v3_boot[4])[,4],2)
+v3_c_uc <- round(as.data.frame(v3_boot[4])[,5],2)
+
+v3_c_ci <- str_c(v3_c,'% (',v3_c_lc,'-',v3_c_uc,')')
+
+## Plotting the ROC Curve
+
+# library(ggplot2)
+# 
+# ggroc(roc(irae_patdf3$tox_true_1, irae_patdf3$tox_test_3)) +
+#   theme_minimal() + 
+#   ggtitle("ROC- IRAE Algorithm 3") + 
+#   geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")
+# 
+# v3_c1 <- str_c(v3_c,' (',v3_c_ci,')')
+
+
+
+v3_performance = data.frame(metric = c("Se", "Sp", "PPV", "NPV", "C-stat"),
+                            result = c(v3_se_t, v3_sp_t, v3_ppv_t, v3_npv_t, v3_c_ci))
+v3_performance
+
+v3_performance_resultonly = data.frame(result = c(v3_se_t, v3_sp_t, v3_ppv_t, v3_npv_t, v3_c_ci))
+v3_performance_resultonly
+```
+
+\
+
+#### Algorithm 3- severe IRAE only 
+
+\
+
+```{r algorithm 3s valdiation metrics}
+## Calc metrics
+t3s <- table(irae_patdf3$tox_true_s1, irae_patdf3$tox_test_3)
+colnames(t3s) = c("test.neg", "test.pos")
+rownames(t3s) = c("true.neg", "true.pos")
+
+v3s_se = round(t3s[2,2] / (t3s[2,2] + t3s[2,1]),3)*100
+v3s_sp = round(t3s[1,1] / (t3s[1,1] + t3s[1,2]),3)*100
+v3s_ppv = round(t3s[2,2] / (t3s[2,2] + t3s[1,2]),3)*100
+v3s_npv = round(t3s[1,1] / (t3s[1,1] + t3s[2,1]),3)*100
+
+## Confidence Intervals
+
+    ## Se
+    v3s_seSE = sqrt((v3s_se/100)*(1-(v3s_se/100))/(t3s[2,2] + t3s[2,1]))
+    
+    v3s_se_lc = round(((v3s_se/100) - 1.96*v3s_seSE)*100,1)
+    v3s_se_uc = round(((v3s_se/100) + 1.96*v3s_seSE)*100,1)
+    
+    v3s_se_t <- str_c(v3s_se,'% (',v3s_se_lc,'-',v3s_se_uc,')')
+    
+    ## Sp
+    v3s_spSE = sqrt((v3s_sp/100)*(1-(v3s_sp/100))/(t3s[1,1] + t3s[1,2]))
+    
+    v3s_sp_lc = round(((v3s_sp/100) - 1.96*v3s_spSE)*100,1)
+    v3s_sp_uc = round(((v3s_sp/100) + 1.96*v3s_spSE)*100,1)
+    
+    v3s_sp_t <- str_c(v3s_sp,'% (',v3s_sp_lc,'-',v3s_sp_uc,')')
+    
+    ## PPV
+    v3s_ppvSE = sqrt((v3s_ppv/100)*(1-(v3s_ppv/100))/(t3s[2,2] + t3s[1,2]))
+    
+    v3s_ppv_lc = round(((v3s_ppv/100) - 1.96*v3s_ppvSE)*100,1)
+    v3s_ppv_uc = round(((v3s_ppv/100) + 1.96*v3s_ppvSE)*100,1)
+    
+    v3s_ppv_t <- str_c(v3s_ppv,'% (',v3s_ppv_lc,'-',v3s_ppv_uc,')')
+    
+    ## NPV
+    v3s_npvSE = sqrt((v3s_npv/100)*(1-(v3s_npv/100))/(t3s[1,1] + t3s[2,1]))
+    
+    v3s_npv_lc = round(((v3s_npv/100) - 1.96*v3s_npvSE)*100,1)
+    v3s_npv_uc = round(((v3s_npv/100) + 1.96*v3s_npvSE)*100,1)
+    
+    v3s_npv_t <- str_c(v3s_npv,'% (',v3s_npv_lc,'-',v3s_npv_uc,')')
+    
+    
+
+v3s_glm = glm(tox_true_s1~tox_test_3, data = irae_patdf3, family = binomial())
+
+v3s_c <- round(Cstat(v3s_glm),2)
+
+# calculating bootstrap confidence intervals
+FUN <- function(d.set, i) {
+   v3s_glm <- glm(tox_true_s1 ~ tox_test_3, data=d.set[i,], family=binomial)
+   Cstat(v3s_glm)
+   }
+   
+## Not run: 
+library(boot)
+boot.res <- boot(irae_patdf3, FUN, R=999) 
+
+# the percentile confidence intervals
+v3s_boot <- boot.ci(boot.res, type="perc")
+v3s_c_lc <- round(as.data.frame(v3s_boot[4])[,4],2)
+v3s_c_uc <- round(as.data.frame(v3s_boot[4])[,5],2)
+
+v3s_c_ci <- str_c(v3s_c,'% (',v3s_c_lc,'-',v3s_c_uc,')')
+
+## Plotting the ROC Curve
+
+# library(ggplot2)
+# 
+# ggroc(roc(irae_patdf3$tox_true_s1, irae_patdf3$tox_test_3)) +
+#   theme_minimal() + 
+#   ggtitle("ROC- IRAE Algorithm 3- Severe IRAE") + 
+#   geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")
+# 
+# v3s_c1 <- str_c(v3s_c,' (',v3s_c_ci,')')
+
+
+
+v3s_performance = data.frame(metric = c("Se", "Sp", "PPV", "NPV", "C-stat"),
+                            result = c(v3s_se_t, v3s_sp_t, v3s_ppv_t, v3s_npv_t, v3s_c_ci))
+v3s_performance
+
+v3s_performance_resultonly = data.frame(result = c(v3s_se_t, v3s_sp_t, v3s_ppv_t, v3s_npv_t, v3s_c_ci))
+v3s_performance_resultonly
+```
+
+\
+
+#### Algorithm 3- pneumonitis and colitis only 
+
+\
+
+```{r algorithm 3pc validation metrics}
+## Calc metrics
+t3pc <- table(irae_patdf1$tox_true_pc3, irae_patdf1$tox_test_pc3)
+colnames(t3pc) = c("test.neg", "test.pos")
+rownames(t3pc) = c("true.neg", "true.pos")
+
+v3pc_se = round(t3pc[2,2] / (t3pc[2,2] + t3pc[2,1]),3)*100
+v3pc_sp = round(t3pc[1,1] / (t3pc[1,1] + t3pc[1,2]),3)*100
+v3pc_ppv = round(t3pc[2,2] / (t3pc[2,2] + t3pc[1,2]),3)*100
+v3pc_npv = round(t3pc[1,1] / (t3pc[1,1] + t3pc[2,1]),3)*100
+
+## Confidence Intervals
+
+    ## Se
+    v3pc_seSE = sqrt((v3pc_se/100)*(1-(v3pc_se/100))/(t3pc[2,2] + t3pc[2,1]))
+    
+    v3pc_se_lc = round(((v3pc_se/100) - 1.96*v3pc_seSE)*100,1)
+    v3pc_se_uc = round(((v3pc_se/100) + 1.96*v3pc_seSE)*100,1)
+    
+    v3pc_se_t <- str_c(v3pc_se,'% (',v3pc_se_lc,'-',v3pc_se_uc,')')
+    
+    ## Sp
+    v3pc_spSE = sqrt((v3pc_sp/100)*(1-(v3pc_sp/100))/(t3pc[1,1] + t3pc[1,2]))
+    
+    v3pc_sp_lc = round(((v3pc_sp/100) - 1.96*v3pc_spSE)*100,1)
+    v3pc_sp_uc = round(((v3pc_sp/100) + 1.96*v3pc_spSE)*100,1)
+    
+    v3pc_sp_t <- str_c(v3pc_sp,'% (',v3pc_sp_lc,'-',v3pc_sp_uc,')')
+    
+    ## PPV
+    v3pc_ppvSE = sqrt((v3pc_ppv/100)*(1-(v3pc_ppv/100))/(t3pc[2,2] + t3pc[1,2]))
+    
+    v3pc_ppv_lc = round(((v3pc_ppv/100) - 1.96*v3pc_ppvSE)*100,1)
+    v3pc_ppv_uc = round(((v3pc_ppv/100) + 1.96*v3pc_ppvSE)*100,1)
+    
+    v3pc_ppv_t <- str_c(v3pc_ppv,'% (',v3pc_ppv_lc,'-',v3pc_ppv_uc,')')
+    
+    ## NPV
+    v3pc_npvSE = sqrt((v3pc_npv/100)*(1-(v3pc_npv/100))/(t3pc[1,1] + t3pc[2,1]))
+    
+    v3pc_npv_lc = round(((v3pc_npv/100) - 1.96*v3pc_npvSE)*100,1)
+    v3pc_npv_uc = round(((v3pc_npv/100) + 1.96*v3pc_npvSE)*100,1)
+    
+    v3pc_npv_t <- str_c(v3pc_npv,'% (',v3pc_npv_lc,'-',v3pc_npv_uc,')')
+
+v3pc_glm = glm(tox_true_pc3~tox_test_pc3, data = irae_patdf1, family = binomial())
+
+v3pc_c <- round(Cstat(v3pc_glm),2)
+
+# calculating bootstrap confidence intervals
+FUN <- function(d.set, i) {
+   v3pc_glm <- glm(tox_true_pc3 ~ tox_test_pc3, data=d.set[i,], family=binomial)
+   Cstat(v3pc_glm)
+   }
+   
+## Not run: 
+library(boot)
+boot.res <- boot(irae_patdf1, FUN, R=999) 
+
+# the percentile confidence intervals
+v3pc_boot <- boot.ci(boot.res, type="perc")
+v3pc_c_ci <- v3pc_boot[4]
+
+v3pc_boot[4]
+
+## Plotting the ROC Curve
+
+library(ggplot2)
+
+ggroc(roc(irae_patdf1$tox_true_pc3, irae_patdf1$tox_test_pc3)) +
+  theme_minimal() + 
+  ggtitle("ROC- IRAE Algorithm 3- Pneumonitis and Colitis") + 
+  geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")
+
+v3pc_c1 <- str_c(v3pc_c,' (',v3pc_c_ci,')')
+
+
+
+v3pc_performance = data.frame(metric = c("Se", "Sp", "PPV", "NPV", "C-stat"),
+                            result = c(v3pc_se_t, v3pc_sp_t, v3pc_ppv_t, v3pc_npv_t, v3pc_c))
+v3pc_performance
+
+v3pc_performance_resultonly = data.frame(result = c(v3pc_se_t, v3pc_sp_t, v3pc_ppv_t, v3pc_npv_t, v3pc_c))
+v3pc_performance_resultonly
+```
+
+\
+
+#### Algorithm 3 severe pneumonitis colitis only
+
+\
+
+```{r algoritm 3pcs validation metrics}
+## Calc metrics
+t3pcs <- table(irae_patdf3$tox_true_pcs1, irae_patdf3$tox_test_3)
+colnames(t3pcs) = c("test.neg", "test.pos")
+rownames(t3pcs) = c("true.neg", "true.pos")
+
+v3pcs_se = round(t3pcs[2,2] / (t3pcs[2,2] + t3pcs[2,1]),3)*100
+v3pcs_sp = round(t3pcs[1,1] / (t3pcs[1,1] + t3pcs[1,2]),3)*100
+v3pcs_ppv = round(t3pcs[2,2] / (t3pcs[2,2] + t3pcs[1,2]),3)*100
+v3pcs_npv = round(t3pcs[1,1] / (t3pcs[1,1] + t3pcs[2,1]),3)*100
+
+## Confidence Intervals
+
+    ## Se
+    v3pcs_seSE = sqrt((v3pcs_se/100)*(1-(v3pcs_se/100))/(t3pcs[2,2] + t3pcs[2,1]))
+    
+    v3pcs_se_lc = round(((v3pcs_se/100) - 1.96*v3pcs_seSE)*100,1)
+    v3pcs_se_uc = round(((v3pcs_se/100) + 1.96*v3pcs_seSE)*100,1)
+    
+    v3pcs_se_t <- str_c(v3pcs_se,'% (',v3pcs_se_lc,'-',v3pcs_se_uc,')')
+    
+    ## Sp
+    v3pcs_spSE = sqrt((v3pcs_sp/100)*(1-(v3pcs_sp/100))/(t3pcs[1,1] + t3pcs[1,2]))
+    
+    v3pcs_sp_lc = round(((v3pcs_sp/100) - 1.96*v3pcs_spSE)*100,1)
+    v3pcs_sp_uc = round(((v3pcs_sp/100) + 1.96*v3pcs_spSE)*100,1)
+    
+    v3pcs_sp_t <- str_c(v3pcs_sp,'% (',v3pcs_sp_lc,'-',v3pcs_sp_uc,')')
+    
+    ## PPV
+    v3pcs_ppvSE = sqrt((v3pcs_ppv/100)*(1-(v3pcs_ppv/100))/(t3pcs[2,2] + t3pcs[1,2]))
+    
+    v3pcs_ppv_lc = round(((v3pcs_ppv/100) - 1.96*v3pcs_ppvSE)*100,1)
+    v3pcs_ppv_uc = round(((v3pcs_ppv/100) + 1.96*v3pcs_ppvSE)*100,1)
+    
+    v3pcs_ppv_t <- str_c(v3pcs_ppv,'% (',v3pcs_ppv_lc,'-',v3pcs_ppv_uc,')')
+    
+    ## NPV
+    v3pcs_npvSE = sqrt((v3pcs_npv/100)*(1-(v3pcs_npv/100))/(t3pcs[1,1] + t3pcs[2,1]))
+    
+    v3pcs_npv_lc = round(((v3pcs_npv/100) - 1.96*v3pcs_npvSE)*100,1)
+    v3pcs_npv_uc = round(((v3pcs_npv/100) + 1.96*v3pcs_npvSE)*100,1)
+    
+    v3pcs_npv_t <- str_c(v3pcs_npv,'% (',v3pcs_npv_lc,'-',v3pcs_npv_uc,')')
+
+v3pcs_glm = glm(tox_true_pcs1~tox_test_3, data = irae_patdf3, family = binomial())
+
+v3pcs_c <- round(Cstat(v3pcs_glm),2)
+
+# calculating bootstrap confidence intervals
+FUN <- function(d.set, i) {
+   v3pcs_glm <- glm(tox_true_pcs1 ~ tox_test_3, data=d.set[i,], family=binomial)
+   Cstat(v3pcs_glm)
+   }
+   
+## Not run: 
+library(boot)
+boot.res <- boot(irae_patdf3, FUN, R=999) 
+
+# the percentile confidence intervals
+v3pcs_boot <- boot.ci(boot.res, type="perc")
+v3pcs_c_lc <- round(as.data.frame(v3pcs_boot[4])[,4],2)
+v3pcs_c_uc <- round(as.data.frame(v3pcs_boot[4])[,5],2)
+
+v3pcs_c_ci <- str_c(v3pcs_c,'% (',v3pcs_c_lc,'-',v3pcs_c_uc,')')
+
+## Plotting the ROC Curve
+
+# library(ggplot2)
+# 
+# ggroc(roc(irae_patdf3$tox_true_pcs1, irae_patdf3$tox_test_3)) +
+#   theme_minimal() + 
+#   ggtitle("ROC- IRAE Algorithm 3- Pneumonitis and Colitis- SEVERE") + 
+#   geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")
+# 
+# v3pcs_c1 <- str_c(v3pcs_c,' (',v3pcs_c_ci,')')
+
+
+
+v3pcs_performance = data.frame(metric = c("Se", "Sp", "PPV", "NPV", "C-stat"),
+                            result = c(v3pcs_se_t, v3pcs_sp_t, v3pcs_ppv_t, v3pcs_npv_t, v3pcs_c_ci))
+v3pcs_performance
+
+v3pcs_performance_resultonly = data.frame(result = c(v3pcs_se_t, v3pcs_sp_t, v3pcs_ppv_t, v3pcs_npv_t, v3pcs_c_ci))
+v3pcs_performance_resultonly
+```
+
+
+\
+
+#### Algorithm 4 (Dx/Rx relaxed). Validation metrics 
+
+\
+
+```{r algorithm 4 validation metrics}
+## Calc metrics
+t4 <- table(irae_patdf3$tox_true_1, irae_patdf3$tox_test_4)
+colnames(t4) = c("test.neg", "test.pos")
+rownames(t4) = c("true.neg", "true.pos")
+
+v4_se = round(t4[2,2] / (t4[2,2] + t4[2,1]),3)*100
+v4_sp = round(t4[1,1] / (t4[1,1] + t4[1,2]),3)*100
+v4_ppv = round(t4[2,2] / (t4[2,2] + t4[1,2]),3)*100
+v4_npv = round(t4[1,1] / (t4[1,1] + t4[2,1]),3)*100
+
+## Confidence Intervals
+
+    ## Se
+    v4_seSE = sqrt((v4_se/100)*(1-(v4_se/100))/(t4[2,2] + t4[2,1]))
+    
+    v4_se_lc = round(((v4_se/100) - 1.96*v4_seSE)*100,1)
+    v4_se_uc = round(((v4_se/100) + 1.96*v4_seSE)*100,1)
+    
+    v4_se_t <- str_c(v4_se,'% (',v4_se_lc,'-',v4_se_uc,')')
+    
+    ## Sp
+    v4_spSE = sqrt((v4_sp/100)*(1-(v4_sp/100))/(t4[1,1] + t4[1,2]))
+    
+    v4_sp_lc = round(((v4_sp/100) - 1.96*v4_spSE)*100,1)
+    v4_sp_uc = round(((v4_sp/100) + 1.96*v4_spSE)*100,1)
+    
+    v4_sp_t <- str_c(v4_sp,'% (',v4_sp_lc,'-',v4_sp_uc,')')
+    
+    ## PPV
+    v4_ppvSE = sqrt((v4_ppv/100)*(1-(v4_ppv/100))/(t4[2,2] + t4[1,2]))
+    
+    v4_ppv_lc = round(((v4_ppv/100) - 1.96*v4_ppvSE)*100,1)
+    v4_ppv_uc = round(((v4_ppv/100) + 1.96*v4_ppvSE)*100,1)
+    
+    v4_ppv_t <- str_c(v4_ppv,'% (',v4_ppv_lc,'-',v4_ppv_uc,')')
+    
+    ## NPV
+    v4_npvSE = sqrt((v4_npv/100)*(1-(v4_npv/100))/(t4[1,1] + t4[2,1]))
+    
+    v4_npv_lc = round(((v4_npv/100) - 1.96*v4_npvSE)*100,1)
+    v4_npv_uc = round(((v4_npv/100) + 1.96*v4_npvSE)*100,1)
+    
+    v4_npv_t <- str_c(v4_npv,'% (',v4_npv_lc,'-',v4_npv_uc,')')
+
+v4_glm = glm(tox_true_1~tox_test_4, data = irae_patdf3, family = binomial())
+
+v4_c <- round(Cstat(v4_glm),2)
+
+# calculating bootstrap confidence intervals
+FUN <- function(d.set, i) {
+   v4_glm <- glm(tox_true_1 ~ tox_test_4, data=d.set[i,], family=binomial)
+   Cstat(v4_glm)
+   }
+   
+## Not run: 
+library(boot)
+boot.res <- boot(irae_patdf3, FUN, R=999) 
+
+# the percentile confidence intervals
+v4_boot <- boot.ci(boot.res, type="perc")
+v4_c_lc <- round(as.data.frame(v4_boot[4])[,4],2)
+v4_c_uc <- round(as.data.frame(v4_boot[4])[,5],2)
+
+v4_c_ci <- str_c(v4_c,'% (',v4_c_lc,'-',v4_c_uc,')')
+
+## Plotting the ROC Curve
+
+# library(ggplot2)
+# 
+# ggroc(roc(irae_patdf3$tox_true_1, irae_patdf3$tox_test_4)) +
+#   theme_minimal() + 
+#   ggtitle("ROC- IRAE Algorithm 4") + 
+#   geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")
+# 
+# v4_c1 <- str_c(v4_c,' (',v4_c_ci,')')
+
+
+
+v4_performance = data.frame(metric = c("Se", "Sp", "PPV", "NPV", "C-stat"),
+                            result = c(v4_se_t, v4_sp_t, v4_ppv_t, v4_npv_t, v4_c_ci))
+v4_performance
+
+v4_performance_resultonly = data.frame(result = c(v4_se_t, v4_sp_t, v4_ppv_t, v4_npv_t, v4_c_ci))
+v4_performance_resultonly
+```
+
+\
+
+#### Algorithm 4- severe IRAE only
+
+\
+
+```{r algorithm 4s validation metrics}
+## Calc metrics
+t4s <- table(irae_patdf3$tox_true_s1, irae_patdf3$tox_test_4)
+colnames(t4s) = c("test.neg", "test.pos")
+rownames(t4s) = c("true.neg", "true.pos")
+
+v4s_se = round(t4s[2,2] / (t4s[2,2] + t4s[2,1]),3)*100
+v4s_sp = round(t4s[1,1] / (t4s[1,1] + t4s[1,2]),3)*100
+v4s_ppv = round(t4s[2,2] / (t4s[2,2] + t4s[1,2]),3)*100
+v4s_npv = round(t4s[1,1] / (t4s[1,1] + t4s[2,1]),3)*100
+
+## Confidence Intervals
+
+    ## Se
+    v4s_seSE = sqrt((v4s_se/100)*(1-(v4s_se/100))/(t4s[2,2] + t4s[2,1]))
+    
+    v4s_se_lc = round(((v4s_se/100) - 1.96*v4s_seSE)*100,1)
+    v4s_se_uc = round(((v4s_se/100) + 1.96*v4s_seSE)*100,1)
+    
+    v4s_se_t <- str_c(v4s_se,'% (',v4s_se_lc,'-',v4s_se_uc,')')
+    
+    ## Sp
+    v4s_spSE = sqrt((v4s_sp/100)*(1-(v4s_sp/100))/(t4s[1,1] + t4s[1,2]))
+    
+    v4s_sp_lc = round(((v4s_sp/100) - 1.96*v4s_spSE)*100,1)
+    v4s_sp_uc = round(((v4s_sp/100) + 1.96*v4s_spSE)*100,1)
+    
+    v4s_sp_t <- str_c(v4s_sp,'% (',v4s_sp_lc,'-',v4s_sp_uc,')')
+    
+    ## PPV
+    v4s_ppvSE = sqrt((v4s_ppv/100)*(1-(v4s_ppv/100))/(t4s[2,2] + t4s[1,2]))
+    
+    v4s_ppv_lc = round(((v4s_ppv/100) - 1.96*v4s_ppvSE)*100,1)
+    v4s_ppv_uc = round(((v4s_ppv/100) + 1.96*v4s_ppvSE)*100,1)
+    
+    v4s_ppv_t <- str_c(v4s_ppv,'% (',v4s_ppv_lc,'-',v4s_ppv_uc,')')
+    
+    ## NPV
+    v4s_npvSE = sqrt((v4s_npv/100)*(1-(v4s_npv/100))/(t4s[1,1] + t4s[2,1]))
+    
+    v4s_npv_lc = round(((v4s_npv/100) - 1.96*v4s_npvSE)*100,1)
+    v4s_npv_uc = round(((v4s_npv/100) + 1.96*v4s_npvSE)*100,1)
+    
+    v4s_npv_t <- str_c(v4s_npv,'% (',v4s_npv_lc,'-',v4s_npv_uc,')')
+    
+
+v4s_glm = glm(tox_true_s1~tox_test_4, data = irae_patdf3, family = binomial())
+
+v4s_c <- round(Cstat(v4s_glm),2)
+
+# calculating bootstrap confidence intervals
+FUN <- function(d.set, i) {
+   v4s_glm <- glm(tox_true_s1 ~ tox_test_4, data=d.set[i,], family=binomial)
+   Cstat(v4s_glm)
+   }
+   
+## Not run: 
+library(boot)
+boot.res <- boot(irae_patdf3, FUN, R=999) 
+
+# the percentile confidence intervals
+v4s_boot <- boot.ci(boot.res, type="perc")
+v4s_c_lc <- round(as.data.frame(v4s_boot[4])[,4],2)
+v4s_c_uc <- round(as.data.frame(v4s_boot[4])[,5],2)
+
+v4s_c_ci <- str_c(v4s_c,'% (',v4s_c_lc,'-',v4s_c_uc,')')
+
+## Plotting the ROC Curve
+# 
+# library(ggplot2)
+# 
+# ggroc(roc(irae_patdf3$tox_true_s1, irae_patdf3$tox_test_4)) +
+#   theme_minimal() + 
+#   ggtitle("ROC- IRAE Algorithm 4- Severe IRAE") + 
+#   geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")
+# 
+# v4s_c1 <- str_c(v4s_c,' (',v4s_c_ci,')')
+
+
+
+v4s_performance = data.frame(metric = c("Se", "Sp", "PPV", "NPV", "C-stat"),
+                            result = c(v4s_se_t, v4s_sp_t, v4s_ppv_t, v4s_npv_t, v4s_c_ci))
+v4s_performance
+
+v4s_performance_resultonly = data.frame(result = c(v4s_se_t, v4s_sp_t, v4s_ppv_t, v4s_npv_t, v4s_c_ci))
+v4s_performance_resultonly
+```
+
+\
+
+#### Algorithm 4- pnuemonitis and colitsis only 
+
+\
+
+```{r algorithm 4pc validaiton metrics}
+## Calc metrics
+t4pc <- table(irae_patdf1$tox_true_pc4, irae_patdf1$tox_test_pc4)
+colnames(t4pc) = c("test.neg", "test.pos")
+rownames(t4pc) = c("true.neg", "true.pos")
+
+v4pc_se = round(t4pc[2,2] / (t4pc[2,2] + t4pc[2,1]),3)*100
+v4pc_sp = round(t4pc[1,1] / (t4pc[1,1] + t4pc[1,2]),3)*100
+v4pc_ppv = round(t4pc[2,2] / (t4pc[2,2] + t4pc[1,2]),3)*100
+v4pc_npv = round(t4pc[1,1] / (t4pc[1,1] + t4pc[2,1]),3)*100
+
+## Confidence Intervals
+
+    ## Se
+    v4pc_seSE = sqrt((v4pc_se/100)*(1-(v4pc_se/100))/(t4pc[2,2] + t4pc[2,1]))
+    
+    v4pc_se_lc = round(((v4pc_se/100) - 1.96*v4pc_seSE)*100,1)
+    v4pc_se_uc = round(((v4pc_se/100) + 1.96*v4pc_seSE)*100,1)
+    
+    v4pc_se_t <- str_c(v4pc_se,'% (',v4pc_se_lc,'-',v4pc_se_uc,')')
+    
+    ## Sp
+    v4pc_spSE = sqrt((v4pc_sp/100)*(1-(v4pc_sp/100))/(t4pc[1,1] + t4pc[1,2]))
+    
+    v4pc_sp_lc = round(((v4pc_sp/100) - 1.96*v4pc_spSE)*100,1)
+    v4pc_sp_uc = round(((v4pc_sp/100) + 1.96*v4pc_spSE)*100,1)
+    
+    v4pc_sp_t <- str_c(v4pc_sp,'% (',v4pc_sp_lc,'-',v4pc_sp_uc,')')
+    
+    ## PPV
+    v4pc_ppvSE = sqrt((v4pc_ppv/100)*(1-(v4pc_ppv/100))/(t4pc[2,2] + t4pc[1,2]))
+    
+    v4pc_ppv_lc = round(((v4pc_ppv/100) - 1.96*v4pc_ppvSE)*100,1)
+    v4pc_ppv_uc = round(((v4pc_ppv/100) + 1.96*v4pc_ppvSE)*100,1)
+    
+    v4pc_ppv_t <- str_c(v4pc_ppv,'% (',v4pc_ppv_lc,'-',v4pc_ppv_uc,')')
+    
+    ## NPV
+    v4pc_npvSE = sqrt((v4pc_npv/100)*(1-(v4pc_npv/100))/(t4pc[1,1] + t4pc[2,1]))
+    
+    v4pc_npv_lc = round(((v4pc_npv/100) - 1.96*v4pc_npvSE)*100,1)
+    v4pc_npv_uc = round(((v4pc_npv/100) + 1.96*v4pc_npvSE)*100,1)
+    
+    v4pc_npv_t <- str_c(v4pc_npv,'% (',v4pc_npv_lc,'-',v4pc_npv_uc,')')
+    
+    
+
+v4pc_glm = glm(tox_true_pc4~tox_test_pc4, data = irae_patdf1, family = binomial())
+
+v4pc_c <- round(Cstat(v4pc_glm),2)
+
+# calculating bootstrap confidence intervals
+FUN <- function(d.set, i) {
+   v4pc_glm <- glm(tox_true_pc4 ~ tox_test_pc4, data=d.set[i,], family=binomial)
+   Cstat(v4pc_glm)
+   }
+   
+## Not run: 
+library(boot)
+boot.res <- boot(irae_patdf1, FUN, R=999) 
+
+# the percentile confidence intervals
+v4pc_boot <- boot.ci(boot.res, type="perc")
+v4pc_c_ci <- v4pc_boot[4]
+
+v4pc_boot[4]
+
+## Plotting the ROC Curve
+
+library(ggplot2)
+
+ggroc(roc(irae_patdf1$tox_true_pc4, irae_patdf1$tox_test_pc4)) +
+  theme_minimal() + 
+  ggtitle("ROC- IRAE Algorithm 4- Pneumonitis and Colitis") + 
+  geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")
+
+v4pc_c1 <- str_c(v4pc_c,' (',v4pc_c_ci,')')
+
+
+
+v4pc_performance = data.frame(metric = c("Se", "Sp", "PPV", "NPV", "C-stat"),
+                            result = c(v4pc_se_t, v4pc_sp_t, v4pc_ppv_t, v4pc_npv_t, v4pc_c))
+v4pc_performance
+
+v4pc_performance_resultonly = data.frame(result = c(v4pc_se_t, v4pc_sp_t, v4pc_ppv_t, v4pc_npv_t, v4pc_c))
+v4pc_performance_resultonly
+```
+
+\
+
+#### Algortihm 4- severe pneumonitis colitis only
+
+\
+
+```{r algorithm 4pcs validation metrics}
+## Calc metrics
+t4pcs <- table(irae_patdf3$tox_true_pcs1, irae_patdf3$tox_test_pc4)
+colnames(t4pcs) = c("test.neg", "test.pos")
+rownames(t4pcs) = c("true.neg", "true.pos")
+
+v4pcs_se = round(t4pcs[2,2] / (t4pcs[2,2] + t4pcs[2,1]),3)*100
+v4pcs_sp = round(t4pcs[1,1] / (t4pcs[1,1] + t4pcs[1,2]),3)*100
+v4pcs_ppv = round(t4pcs[2,2] / (t4pcs[2,2] + t4pcs[1,2]),3)*100
+v4pcs_npv = round(t4pcs[1,1] / (t4pcs[1,1] + t4pcs[2,1]),3)*100
+
+## Confidence Intervals
+
+    ## Se
+    v4pcs_seSE = sqrt((v4pcs_se/100)*(1-(v4pcs_se/100))/(t4pcs[2,2] + t4pcs[2,1]))
+    
+    v4pcs_se_lc = round(((v4pcs_se/100) - 1.96*v4pcs_seSE)*100,1)
+    v4pcs_se_uc = round(((v4pcs_se/100) + 1.96*v4pcs_seSE)*100,1)
+    
+    v4pcs_se_t <- str_c(v4pcs_se,'% (',v4pcs_se_lc,'-',v4pcs_se_uc,')')
+    
+    ## Sp
+    v4pcs_spSE = sqrt((v4pcs_sp/100)*(1-(v4pcs_sp/100))/(t4pcs[1,1] + t4pcs[1,2]))
+    
+    v4pcs_sp_lc = round(((v4pcs_sp/100) - 1.96*v4pcs_spSE)*100,1)
+    v4pcs_sp_uc = round(((v4pcs_sp/100) + 1.96*v4pcs_spSE)*100,1)
+    
+    v4pcs_sp_t <- str_c(v4pcs_sp,'% (',v4pcs_sp_lc,'-',v4pcs_sp_uc,')')
+    
+    ## PPV
+    v4pcs_ppvSE = sqrt((v4pcs_ppv/100)*(1-(v4pcs_ppv/100))/(t4pcs[2,2] + t4pcs[1,2]))
+    
+    v4pcs_ppv_lc = round(((v4pcs_ppv/100) - 1.96*v4pcs_ppvSE)*100,1)
+    v4pcs_ppv_uc = round(((v4pcs_ppv/100) + 1.96*v4pcs_ppvSE)*100,1)
+    
+    v4pcs_ppv_t <- str_c(v4pcs_ppv,'% (',v4pcs_ppv_lc,'-',v4pcs_ppv_uc,')')
+    
+    ## NPV
+    v4pcs_npvSE = sqrt((v4pcs_npv/100)*(1-(v4pcs_npv/100))/(t4pcs[1,1] + t4pcs[2,1]))
+    
+    v4pcs_npv_lc = round(((v4pcs_npv/100) - 1.96*v4pcs_npvSE)*100,1)
+    v4pcs_npv_uc = round(((v4pcs_npv/100) + 1.96*v4pcs_npvSE)*100,1)
+    
+    v4pcs_npv_t <- str_c(v4pcs_npv,'% (',v4pcs_npv_lc,'-',v4pcs_npv_uc,')')
+    
+    
+
+v4pcs_glm = glm(tox_true_pcs1~tox_test_pc4, data = irae_patdf3, family = binomial())
+
+v4pcs_c <- round(Cstat(v4pcs_glm),2)
+
+# calculating bootstrap confidence intervals
+FUN <- function(d.set, i) {
+   v4pcs_glm <- glm(tox_true_pcs1 ~ tox_test_pc4, data=d.set[i,], family=binomial)
+   Cstat(v4pcs_glm)
+   }
+   
+## Not run: 
+library(boot)
+boot.res <- boot(irae_patdf3, FUN, R=999) 
+
+# the percentile confidence intervals
+v4pcs_boot <- boot.ci(boot.res, type="perc")
+v4pcs_c_lc <- round(as.data.frame(v4pcs_boot[4])[,4],2)
+v4pcs_c_uc <- round(as.data.frame(v4pcs_boot[4])[,5],2)
+
+v4pcs_c_ci <- str_c(v4pcs_c,'% (',v4pcs_c_lc,'-',v4pcs_c_uc,')')
+
+## Plotting the ROC Curve
+
+# library(ggplot2)
+# 
+# ggroc(roc(irae_patdf3$tox_true_pcs1, irae_patdf3$tox_test_pc4)) +
+#   theme_minimal() + 
+#   ggtitle("ROC- IRAE Algorithm 4- Pneumonitis and Colitis") + 
+#   geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")
+# 
+# v4pcs_c1 <- str_c(v4pcs_c,' (',v4pcs_c_ci,')')
+
+
+
+v4pcs_performance = data.frame(metric = c("Se", "Sp", "PPV", "NPV", "C-stat"),
+                            result = c(v4pcs_se_t, v4pcs_sp_t, v4pcs_ppv_t, v4pcs_npv_t, v4pcs_c_ci))
+v4pcs_performance
+
+v4pcs_performance_resultonly = data.frame(result = c(v4pcs_se_t, v4pcs_sp_t, v4pcs_ppv_t, v4pcs_npv_t, v4pcs_c_ci))
+v4pcs_performance_resultonly
+```
+
+\ 
+
+#### Algorithm 5 (discontinue) validation metrics
+
+\
+
+
+```{r algorithm 5 validation metrics}
+## Calc metrics
+t5 <- table(irae_patdf3$tox_true_1, irae_patdf3$tox_test_5)
+colnames(t5) = c("test.neg", "test.pos")
+rownames(t5) = c("true.neg", "true.pos")
+
+v5_se = round(t5[2,2] / (t5[2,2] + t5[2,1]),3)*100
+v5_sp = round(t5[1,1] / (t5[1,1] + t5[1,2]),3)*100
+v5_ppv = round(t5[2,2] / (t5[2,2] + t5[1,2]),3)*100
+v5_npv = round(t5[1,1] / (t5[1,1] + t5[2,1]),3)*100
+
+## Confidence Intervals
+
+    ## Se
+    v5_seSE = sqrt((v5_se/100)*(1-(v5_se/100))/(t5[2,2] + t5[2,1]))
+    
+    v5_se_lc = round(((v5_se/100) - 1.96*v5_seSE)*100,1)
+    v5_se_uc = round(((v5_se/100) + 1.96*v5_seSE)*100,1)
+    
+    v5_se_t <- str_c(v5_se,'% (',v5_se_lc,'-',v5_se_uc,')')
+    
+    ## Sp
+    v5_spSE = sqrt((v5_sp/100)*(1-(v5_sp/100))/(t5[1,1] + t5[1,2]))
+    
+    v5_sp_lc = round(((v5_sp/100) - 1.96*v5_spSE)*100,1)
+    v5_sp_uc = round(((v5_sp/100) + 1.96*v5_spSE)*100,1)
+    
+    v5_sp_t <- str_c(v5_sp,'% (',v5_sp_lc,'-',v5_sp_uc,')')
+    
+    ## PPV
+    v5_ppvSE = sqrt((v5_ppv/100)*(1-(v5_ppv/100))/(t5[2,2] + t5[1,2]))
+    
+    v5_ppv_lc = round(((v5_ppv/100) - 1.96*v5_ppvSE)*100,1)
+    v5_ppv_uc = round(((v5_ppv/100) + 1.96*v5_ppvSE)*100,1)
+    
+    v5_ppv_t <- str_c(v5_ppv,'% (',v5_ppv_lc,'-',v5_ppv_uc,')')
+    
+    ## NPV
+    v5_npvSE = sqrt((v5_npv/100)*(1-(v5_npv/100))/(t5[1,1] + t5[2,1]))
+    
+    v5_npv_lc = round(((v5_npv/100) - 1.96*v5_npvSE)*100,1)
+    v5_npv_uc = round(((v5_npv/100) + 1.96*v5_npvSE)*100,1)
+    
+    v5_npv_t <- str_c(v5_npv,'% (',v5_npv_lc,'-',v5_npv_uc,')')
+
+v5_glm = glm(tox_true_1~tox_test_5, data = irae_patdf3, family = binomial())
+
+v5_c <- round(Cstat(v5_glm),2)
+
+# calculating bootstrap confidence intervals
+FUN <- function(d.set, i) {
+   v5_glm <- glm(tox_true_1 ~ tox_test_5, data=d.set[i,], family=binomial)
+   Cstat(v5_glm)
+   }
+   
+## Not run: 
+library(boot)
+boot.res <- boot(irae_patdf3, FUN, R=999) 
+
+# the percentile confidence intervals
+v5_boot <- boot.ci(boot.res, type="perc")
+v5_c_lc <- round(as.data.frame(v5_boot[4])[,4],2)
+v5_c_uc <- round(as.data.frame(v5_boot[4])[,5],2)
+
+v5_c_ci <- str_c(v5_c,'% (',v5_c_lc,'-',v5_c_uc,')')
+
+## Plotting the ROC Curve
+
+# library(ggplot2)
+# 
+# ggroc(roc(irae_patdf3$tox_true_1, irae_patdf3$tox_test_5)) +
+#   theme_minimal() + 
+#   ggtitle("ROC- IRAE Algorithm 4") + 
+#   geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")
+# 
+# v5_c1 <- str_c(v5_c,' (',v5_c_ci,')')
+
+
+
+v5_performance = data.frame(metric = c("Se", "Sp", "PPV", "NPV", "C-stat"),
+                            result = c(v5_se_t, v5_sp_t, v5_ppv_t, v5_npv_t, v5_c_ci))
+v5_performance
+
+v5_performance_resultonly = data.frame(result = c(v5_se_t, v5_sp_t, v5_ppv_t, v5_npv_t, v5_c_ci))
+v5_performance_resultonly
+```
+
+\
+
+#### Algorithm 5- severe IRAE only
+
+
+```{r algorithm 5s validation metrics}
+## Calc metrics
+t5s <- table(irae_patdf3$tox_true_s1, irae_patdf3$tox_test_5)
+colnames(t5s) = c("test.neg", "test.pos")
+rownames(t5s) = c("true.neg", "true.pos")
+
+v5s_se = round(t5s[2,2] / (t5s[2,2] + t5s[2,1]),3)*100
+v5s_sp = round(t5s[1,1] / (t5s[1,1] + t5s[1,2]),3)*100
+v5s_ppv = round(t5s[2,2] / (t5s[2,2] + t5s[1,2]),3)*100
+v5s_npv = round(t5s[1,1] / (t5s[1,1] + t5s[2,1]),3)*100
+
+## Confidence Intervals
+
+    ## Se
+    v5s_seSE = sqrt((v5s_se/100)*(1-(v5s_se/100))/(t5s[2,2] + t5s[2,1]))
+    
+    v5s_se_lc = round(((v5s_se/100) - 1.96*v5s_seSE)*100,1)
+    v5s_se_uc = round(((v5s_se/100) + 1.96*v5s_seSE)*100,1)
+    
+    v5s_se_t <- str_c(v5s_se,'% (',v5s_se_lc,'-',v5s_se_uc,')')
+    
+    ## Sp
+    v5s_spSE = sqrt((v5s_sp/100)*(1-(v5s_sp/100))/(t5s[1,1] + t5s[1,2]))
+    
+    v5s_sp_lc = round(((v5s_sp/100) - 1.96*v5s_spSE)*100,1)
+    v5s_sp_uc = round(((v5s_sp/100) + 1.96*v5s_spSE)*100,1)
+    
+    v5s_sp_t <- str_c(v5s_sp,'% (',v5s_sp_lc,'-',v5s_sp_uc,')')
+    
+    ## PPV
+    v5s_ppvSE = sqrt((v5s_ppv/100)*(1-(v5s_ppv/100))/(t5s[2,2] + t5s[1,2]))
+    
+    v5s_ppv_lc = round(((v5s_ppv/100) - 1.96*v5s_ppvSE)*100,1)
+    v5s_ppv_uc = round(((v5s_ppv/100) + 1.96*v5s_ppvSE)*100,1)
+    
+    v5s_ppv_t <- str_c(v5s_ppv,'% (',v5s_ppv_lc,'-',v5s_ppv_uc,')')
+    
+    ## NPV
+    v5s_npvSE = sqrt((v5s_npv/100)*(1-(v5s_npv/100))/(t5s[1,1] + t5s[2,1]))
+    
+    v5s_npv_lc = round(((v5s_npv/100) - 1.96*v5s_npvSE)*100,1)
+    v5s_npv_uc = round(((v5s_npv/100) + 1.96*v5s_npvSE)*100,1)
+    
+    v5s_npv_t <- str_c(v5s_npv,'% (',v5s_npv_lc,'-',v5s_npv_uc,')')
+    
+
+v5s_glm = glm(tox_true_s1~tox_test_5, data = irae_patdf3, family = binomial())
+
+v5s_c <- round(Cstat(v5s_glm),2)
+
+# calculating bootstrap confidence intervals
+FUN <- function(d.set, i) {
+   v5s_glm <- glm(tox_true_s1 ~ tox_test_5, data=d.set[i,], family=binomial)
+   Cstat(v5s_glm)
+   }
+   
+## Not run: 
+library(boot)
+boot.res <- boot(irae_patdf3, FUN, R=999) 
+
+# the percentile confidence intervals
+v5s_boot <- boot.ci(boot.res, type="perc")
+v5s_c_lc <- round(as.data.frame(v5s_boot[4])[,4],2)
+v5s_c_uc <- round(as.data.frame(v5s_boot[4])[,5],2)
+
+v5s_c_ci <- str_c(v5s_c,'% (',v5s_c_lc,'-',v5s_c_uc,')')
+
+## Plotting the ROC Curve
+
+# library(ggplot2)
+# 
+# ggroc(roc(irae_patdf3$tox_true_s1, irae_patdf3$tox_test_5)) +
+#   theme_minimal() + 
+#   ggtitle("ROC- IRAE Algorithm 5- Severe IRAE") + 
+#   geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")
+# 
+# v5s_c1 <- str_c(v5s_c,' (',v5s_c_ci,')')
+
+
+
+v5s_performance = data.frame(metric = c("Se", "Sp", "PPV", "NPV", "C-stat"),
+                            result = c(v5s_se_t, v5s_sp_t, v5s_ppv_t, v5s_npv_t, v5s_c_ci))
+v5s_performance
+
+v5s_performance_resultonly = data.frame(result = c(v5s_se_t, v5s_sp_t, v5s_ppv_t, v5s_npv_t, v5s_c_ci))
+v5s_performance_resultonly
+```
+
+\
+
+#### Algorithm 5- pnuemonitis and colitsis only 
+
+\
+
+*** Not updated with v5 code
+
+```{r algorithm 4pc validaiton metrics}
+## Calc metrics
+t4pc <- table(irae_patdf1$tox_true_pc4, irae_patdf1$tox_test_pc4)
+colnames(t4pc) = c("test.neg", "test.pos")
+rownames(t4pc) = c("true.neg", "true.pos")
+
+v4pc_se = round(t4pc[2,2] / (t4pc[2,2] + t4pc[2,1]),3)*100
+v4pc_sp = round(t4pc[1,1] / (t4pc[1,1] + t4pc[1,2]),3)*100
+v4pc_ppv = round(t4pc[2,2] / (t4pc[2,2] + t4pc[1,2]),3)*100
+v4pc_npv = round(t4pc[1,1] / (t4pc[1,1] + t4pc[2,1]),3)*100
+
+## Confidence Intervals
+
+    ## Se
+    v4pc_seSE = sqrt((v4pc_se/100)*(1-(v4pc_se/100))/(t4pc[2,2] + t4pc[2,1]))
+    
+    v4pc_se_lc = round(((v4pc_se/100) - 1.96*v4pc_seSE)*100,1)
+    v4pc_se_uc = round(((v4pc_se/100) + 1.96*v4pc_seSE)*100,1)
+    
+    v4pc_se_t <- str_c(v4pc_se,'% (',v4pc_se_lc,'-',v4pc_se_uc,')')
+    
+    ## Sp
+    v4pc_spSE = sqrt((v4pc_sp/100)*(1-(v4pc_sp/100))/(t4pc[1,1] + t4pc[1,2]))
+    
+    v4pc_sp_lc = round(((v4pc_sp/100) - 1.96*v4pc_spSE)*100,1)
+    v4pc_sp_uc = round(((v4pc_sp/100) + 1.96*v4pc_spSE)*100,1)
+    
+    v4pc_sp_t <- str_c(v4pc_sp,'% (',v4pc_sp_lc,'-',v4pc_sp_uc,')')
+    
+    ## PPV
+    v4pc_ppvSE = sqrt((v4pc_ppv/100)*(1-(v4pc_ppv/100))/(t4pc[2,2] + t4pc[1,2]))
+    
+    v4pc_ppv_lc = round(((v4pc_ppv/100) - 1.96*v4pc_ppvSE)*100,1)
+    v4pc_ppv_uc = round(((v4pc_ppv/100) + 1.96*v4pc_ppvSE)*100,1)
+    
+    v4pc_ppv_t <- str_c(v4pc_ppv,'% (',v4pc_ppv_lc,'-',v4pc_ppv_uc,')')
+    
+    ## NPV
+    v4pc_npvSE = sqrt((v4pc_npv/100)*(1-(v4pc_npv/100))/(t4pc[1,1] + t4pc[2,1]))
+    
+    v4pc_npv_lc = round(((v4pc_npv/100) - 1.96*v4pc_npvSE)*100,1)
+    v4pc_npv_uc = round(((v4pc_npv/100) + 1.96*v4pc_npvSE)*100,1)
+    
+    v4pc_npv_t <- str_c(v4pc_npv,'% (',v4pc_npv_lc,'-',v4pc_npv_uc,')')
+    
+    
+
+v4pc_glm = glm(tox_true_pc4~tox_test_pc4, data = irae_patdf1, family = binomial())
+
+v4pc_c <- round(Cstat(v4pc_glm),2)
+
+# calculating bootstrap confidence intervals
+FUN <- function(d.set, i) {
+   v4pc_glm <- glm(tox_true_pc4 ~ tox_test_pc4, data=d.set[i,], family=binomial)
+   Cstat(v4pc_glm)
+   }
+   
+## Not run: 
+library(boot)
+boot.res <- boot(irae_patdf1, FUN, R=999) 
+
+# the percentile confidence intervals
+v4pc_boot <- boot.ci(boot.res, type="perc")
+v4pc_c_ci <- v4pc_boot[4]
+
+v4pc_boot[4]
+
+## Plotting the ROC Curve
+
+library(ggplot2)
+
+ggroc(roc(irae_patdf1$tox_true_pc4, irae_patdf1$tox_test_pc4)) +
+  theme_minimal() + 
+  ggtitle("ROC- IRAE Algorithm 4- Pneumonitis and Colitis") + 
+  geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")
+
+v4pc_c1 <- str_c(v4pc_c,' (',v4pc_c_ci,')')
+
+
+
+v4pc_performance = data.frame(metric = c("Se", "Sp", "PPV", "NPV", "C-stat"),
+                            result = c(v4pc_se_t, v4pc_sp_t, v4pc_ppv_t, v4pc_npv_t, v4pc_c))
+v4pc_performance
+
+v4pc_performance_resultonly = data.frame(result = c(v4pc_se_t, v4pc_sp_t, v4pc_ppv_t, v4pc_npv_t, v4pc_c))
+v4pc_performance_resultonly
+```
+
+\
+
+#### Algortihm 5- severe pneumonitis oclitis only
+
+\
+
+```{r algorithm 5pcs validation metrics}
+## Calc metrics
+t5pcs <- table(irae_patdf3$tox_true_pcs1, irae_patdf3$tox_test_pc5)
+colnames(t5pcs) = c("test.neg", "test.pos")
+rownames(t5pcs) = c("true.neg", "true.pos")
+
+v5pcs_se = round(t5pcs[2,2] / (t5pcs[2,2] + t5pcs[2,1]),3)*100
+v5pcs_sp = round(t5pcs[1,1] / (t5pcs[1,1] + t5pcs[1,2]),3)*100
+v5pcs_ppv = round(t5pcs[2,2] / (t5pcs[2,2] + t5pcs[1,2]),3)*100
+v5pcs_npv = round(t5pcs[1,1] / (t5pcs[1,1] + t5pcs[2,1]),3)*100
+
+## Confidence Intervals
+
+    ## Se
+    v5pcs_seSE = sqrt((v5pcs_se/100)*(1-(v5pcs_se/100))/(t5pcs[2,2] + t5pcs[2,1]))
+    
+    v5pcs_se_lc = round(((v5pcs_se/100) - 1.96*v5pcs_seSE)*100,1)
+    v5pcs_se_uc = round(((v5pcs_se/100) + 1.96*v5pcs_seSE)*100,1)
+    
+    v5pcs_se_t <- str_c(v5pcs_se,'% (',v5pcs_se_lc,'-',v5pcs_se_uc,')')
+    
+    ## Sp
+    v5pcs_spSE = sqrt((v5pcs_sp/100)*(1-(v5pcs_sp/100))/(t5pcs[1,1] + t5pcs[1,2]))
+    
+    v5pcs_sp_lc = round(((v5pcs_sp/100) - 1.96*v5pcs_spSE)*100,1)
+    v5pcs_sp_uc = round(((v5pcs_sp/100) + 1.96*v5pcs_spSE)*100,1)
+    
+    v5pcs_sp_t <- str_c(v5pcs_sp,'% (',v5pcs_sp_lc,'-',v5pcs_sp_uc,')')
+    
+    ## PPV
+    v5pcs_ppvSE = sqrt((v5pcs_ppv/100)*(1-(v5pcs_ppv/100))/(t5pcs[2,2] + t5pcs[1,2]))
+    
+    v5pcs_ppv_lc = round(((v5pcs_ppv/100) - 1.96*v5pcs_ppvSE)*100,1)
+    v5pcs_ppv_uc = round(((v5pcs_ppv/100) + 1.96*v5pcs_ppvSE)*100,1)
+    
+    v5pcs_ppv_t <- str_c(v5pcs_ppv,'% (',v5pcs_ppv_lc,'-',v5pcs_ppv_uc,')')
+    
+    ## NPV
+    v5pcs_npvSE = sqrt((v5pcs_npv/100)*(1-(v5pcs_npv/100))/(t5pcs[1,1] + t5pcs[2,1]))
+    
+    v5pcs_npv_lc = round(((v5pcs_npv/100) - 1.96*v5pcs_npvSE)*100,1)
+    v5pcs_npv_uc = round(((v5pcs_npv/100) + 1.96*v5pcs_npvSE)*100,1)
+    
+    v5pcs_npv_t <- str_c(v5pcs_npv,'% (',v5pcs_npv_lc,'-',v5pcs_npv_uc,')')
+    
+    
+
+v5pcs_glm = glm(tox_true_pcs1~tox_test_pc5, data = irae_patdf3, family = binomial())
+
+v5pcs_c <- round(Cstat(v5pcs_glm),2)
+
+# calculating bootstrap confidence intervals
+FUN <- function(d.set, i) {
+   v5pcs_glm <- glm(tox_true_pcs1 ~ tox_test_pc5, data=d.set[i,], family=binomial)
+   Cstat(v5pcs_glm)
+   }
+   
+## Not run: 
+library(boot)
+boot.res <- boot(irae_patdf3, FUN, R=999) 
+
+# the percentile confidence intervals
+v5pcs_boot <- boot.ci(boot.res, type="perc")
+v5pcs_c_lc <- round(as.data.frame(v5pcs_boot[4])[,4],2)
+v5pcs_c_uc <- round(as.data.frame(v5pcs_boot[4])[,5],2)
+
+v5pcs_c_ci <- str_c(v5pcs_c,'% (',v5pcs_c_lc,'-',v5pcs_c_uc,')')
+
+## Plotting the ROC Curve
+
+# library(ggplot2)
+# 
+# ggroc(roc(irae_patdf3$tox_true_pcs1, irae_patdf3$tox_test_pc5)) +
+#   theme_minimal() + 
+#   ggtitle("ROC- IRAE Algorithm 5- Severe Pneumonitis and Colitis") + 
+#   geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")
+# 
+# v5pcs_c1 <- str_c(v5pcs_c,' (',v5pcs_c_ci,')')
+
+
+
+v5pcs_performance = data.frame(metric = c("Se", "Sp", "PPV", "NPV", "C-stat"),
+                            result = c(v5pcs_se_t, v5pcs_sp_t, v5pcs_ppv_t, v5pcs_npv_t, v5pcs_c_ci))
+v5pcs_performance
+
+v5pcs_performance_resultonly = data.frame(result = c(v5pcs_se_t, v5pcs_sp_t, v5pcs_ppv_t, v5pcs_npv_t, v5pcs_c_ci))
+v5pcs_performance_resultonly
+```
+
+
+
+
+
+
+
+\
+
+#### Making ROC plots/etc
+
+\
+
+```{r roc plots}
+## Algorithm 1
+
+glm_v1 <- glm(tox_true_1 ~ tox_test_1, data=irae_patdf1, family=binomial())
+irae_patdf1$v1_pred <- predict(glm_v1, type = "response")
+
+glm_v2 <- glm(tox_true_2 ~ tox_test_2, data=irae_patdf1, family=binomial())
+irae_patdf1$v2_pred <- predict(glm_v1, type = "response")
+
+glm_v3 <- glm(tox_true_3 ~ tox_test_3, data=irae_patdf1, family=binomial())
+irae_patdf1$v3_pred <- predict(glm_v1, type = "response")
+
+glm_v4 <- glm(tox_true_4 ~ tox_test_4, data=irae_patdf1, family=binomial())
+irae_patdf1$v4_pred <- predict(glm_v4, type = "response")
+
+glm_v5 <- glm(tox_true_s1 ~ tox_test_1, data=irae_patdf1, family=binomial())
+irae_patdf1$v5_pred <- predict(glm_v5, type = "response")
+
+glm_v6 <- glm(tox_true_s2 ~ tox_test_2, data=irae_patdf1, family=binomial())
+irae_patdf1$v6_pred <- predict(glm_v6, type = "response")
+
+glm_v7 <- glm(tox_true_s3 ~ tox_test_3, data=irae_patdf1, family=binomial())
+irae_patdf1$v7_pred <- predict(glm_v7, type = "response")
+
+glm_v8 <- glm(tox_true_s4 ~ tox_test_4, data=irae_patdf1, family=binomial())
+irae_patdf1$v8_pred <- predict(glm_v8, type = "response")
+
+
+obj.rpart1=roc(irae_patdf1$tox_true_1, irae_patdf1$v1_pred, auc=T)
+auc(obj.rpart1)
+
+obj.rpart11 = roc(irae_patdf1$tox_true_1 ~ irae_patdf1$tox_test_2, auc=T)
+auc(obj.rpart11)
+
+obj.rpart2=roc(irae_patdf1$tox_true_2, irae_patdf1$v2_pred, auc=T)
+obj.rpart21 = roc(irae_patdf1$tox_true_1 ~ irae_patdf1$tox_test_2, auc=T)
+
+obj.rpart3=roc(irae_patdf1$tox_true_3, irae_patdf1$v3_pred, auc=T)
+obj.rpart31 = roc(irae_patdf1$tox_true_3 ~ irae_patdf1$tox_test_3, auc=T)
+
+obj.rpart4=roc(irae_patdf1$tox_true_4, irae_patdf1$v4_pred, auc=T)
+auc(obj.rpart4)
+
+obj.rpart41 = roc(irae_patdf1$tox_true_4 ~ irae_patdf1$tox_test_4, auc=T)
+
+obj.rpart5=roc(irae_patdf1$tox_true_s1, irae_patdf1$v5_pred, auc=T)
+auc(obj.rpart5)
+
+obj.rpart51 = roc(irae_patdf1$tox_true_s1 ~ irae_patdf1$tox_test_1, auc=T)
+
+obj.rpart6=roc(irae_patdf1$tox_true_s2, irae_patdf1$v6_pred, auc=T)
+obj.rpart61 = roc(irae_patdf1$tox_true_s2 ~ irae_patdf1$tox_test_2, auc=T)
+
+obj.rpart7=roc(irae_patdf1$tox_true_s3, irae_patdf1$v7_pred, auc=T)
+obj.rpart71 = roc(irae_patdf1$tox_true_s3 ~ irae_patdf1$tox_test_3, auc=T)
+
+obj.rpart8=roc(irae_patdf1$tox_true_s4, irae_patdf1$v8_pred, auc=T)
+auc(obj.rpart8)
+
+obj.rpart81 = roc(irae_patdf1$tox_true_s4 ~ irae_patdf1$tox_test_4, auc=T)
+auc(obj.rpart81)
+
+## Compare Algorithms V1 and V4 across severity levels
+
+compare_roc <- ggroc(list(V1_0.59 = obj.rpart1, 
+           V1_Severe_0.68 = obj.rpart5,
+           V4_0.56 = obj.rpart4,
+           V4_Severe_0.62 = obj.rpart8),
+      alpha = 0.5, 
+      aes = c("linetype","color")) +
+  geom_line(size=0.75) +
+  scale_color_manual(values=c('V1_0.59'='navyblue', 'V1_Severe_0.68'='navyblue', 
+                              'V4_0.56'='red', 'V4_Severe_0.62'='red')) + 
+  scale_linetype_manual(breaks = c('V1_0.59', 'V1_Severe_0.68', 'V4_0.56', 'V4_Severe_0.62'),
+                        values=c('dashed','dotted', 'dashed', 'dotted')) +
+  theme_bw()
+ggsave(path = "C:/Users/jheywar1/Documents/Dissertation Aim 1 PMAP Analysis", filename = "roc_compare.png", width=6, height=4,dpi=300)
+
+compare_roc
+
+#https://community.rstudio.com/t/how-to-get-color-and-linetype-to-work-for-multiple-line-roc-in-ggplot-tidyverse/66002/3
+
+## Example from the web
+library(pROC)
+library(dplyr)
+library(purrr)
+library(ggplot2)
+
+df <- data.frame(
+  truth = rbinom(n = 1000, size = 1, prob = 0.5),
+  pred.prob = runif(n = 1000),
+  group = factor(rep(LETTERS[1:5], times = 200))
+)
+
+df.list <- df %>% 
+  group_split(group)
+
+map_function <- function(x){
+  pROC::roc(
+    data = x,
+    response = truth,
+    predictor = pred.prob
+  )
+}
+
+roc.list <- map(df.list, map_function)
+
+ggroc(roc.list, alpha = 0.5) +
+  scale_color_manual(values=c(rep('grey', 4), 'red')) + 
+  theme_bw()
+
+
+```
+
+
+
+#### Assessing data elements associated with "true positive"
+
+
+
+```{r true positive redcap analysis}
+###
+
+pneumonitis_pat <- irae_attrib[irae_attrib$ae_type %in% c("41"),]
+
+## 
+
+pneumonitis_falseneg_diaglist <- filter(emr_diagdf, cohort_id %in% pneumonitis_pat$cohort_id)
+```
+
