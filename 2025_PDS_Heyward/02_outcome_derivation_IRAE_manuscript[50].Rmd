@@ -1,0 +1,1638 @@
+---
+title: "xx_outcome_derivation_irae"
+output:
+  pdf_document: default
+  html_document: default
+date: "2023-07-25"
+---
+
+#### NOTE: As of Nov 20 2023 need to re-run this and censor records after Oct 23, 2020 (last date of irAE curation in the RedCAP database- no events ascertained after that date)
+
+#### NOTE: [After censoring step done above] If re-running analysis, to avoid updated counts:
+
+1. skip to chunk "merge method 2 filter all irae tx records by membership on ICI exposure and dx list" and run "load" commands for:
+
+- ICI_IRAE_1_dedupe.Rdata (saved in local directory) (these are the deduped ICD-code ascertained toxicities among ICI exposed individuals with pneumonitis, colitis, and hepatitis cases tagged);
+
+- irae_tx_at_dedupe.Rdata (saved in local directory) (these are the deduped administration records of guideline-recommended irAE treatments for patients that took ICI);
+
+- irae_tx_at_50_dedupe.Rdata (saved in local directory) (same as above, but treatments filtered at threshold of 50mg prednisone equivalent and other guideline recommended minimum thresholds)
+
+2. Any scripts run from there will preserve existing patient/event counts
+
+
+#### SAVED DATAFRAMES - TEST POSITIVES- Look under each heading titled "Test positives:...." 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(odbc)
+library(DBI)
+library(dbplyr)
+library(dplyr)
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(knitr)
+library(writexl)
+library(graphics)
+setwd("S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript")
+```
+
+
+\
+
+```{r pmap connection}
+# connect to PMAP database
+pmap.con <- DBI::dbConnect(
+odbc::odbc(),
+Driver = "ODBC Driver 17 for SQL Server",
+Server = "esmpmdbpr5.win.ad.jhu.edu",
+Database = "ThoracicOncology_Murray_IRB00355453_Projection",
+Uid = "WIN\\jheywar1",
+Pwd = rstudioapi::askForPassword("Password"),
+Trusted_Connection = "yes"
+)
+```
+
+\
+
+### Step 1. Identify individuals with ICD10 code match to IRAE subsequent to index date of ICI exposure
+
+#### 1. Possibly relevant tables are: 
+
+  + derived_emr_diagnosis_info**
+    ** we will NOT proceed with this 
+    
+    
+    **** NOTE Nov 28 2023: Above ingests data from several information streams but collapses duplicate diagnoses in a way that not all dates are visible so need to pull individual dx codes from the tables this pulls from: 
+    HSP_ADMIT_DX
+    HSP_BILLING_DX
+    MEDICAL_HX
+    PAT_ENC_DX
+    PROBLEM_LIST
+    
+
+
+\
+
+### IRAE algorithms summary (need to make more specific for each version- specific dx codes and cortico usage requirements) 
+
+
+#### Version 1: Brown V et al. case definition: 
+
+      - V1 Criteria 1. Dx of toxicity subsequent to ICI index date (specific list of dx below) (before Oct 23 2020)
+
+      - V1 Criteria 2. There is Rx for new corticosteroid or other irAE tx within +/- 40 days of Dx date 
+         - The products of interest are prednisone or methylprednisolone (corticosteroids) at 1mg/kg equivalent (extrapolating to 50mg doseor higher for a med admin record) OR triamcinolone (or equivalent) (any dose) OR levothyroxine (threshold?) OR infliximab (1mg/kg prednisone equivalent) (before Oct 23 2020)
+
+
+#### Version 2: Diagnosis codes only (V1 criteria 1)
+
+#### Version 3: irAE treatments only (V1 criteria 2)
+
+#### Version 4: Same as Version 1; dates of irAE tx relaxed (any date before Dx to +40 days after Dx)
+
+#### Version 5: Same as Version 1; evidence of medication discontinuation after suspected irAE
+
+#### Version 6: Database-driven (see notes below)
+
+
+\
+
+### Algorithm 1 Criteria 1. Dx code corresponding to suspected irAE anytime after ICI index date (agnostic to locale of diagnosis)
+
+### Pull diagnoses from various tables
+
+### 1. PAT_ENC_DX (derived_encounter_dx)
+
+```{r derived patient encounters}
+## PAT_ENC_DX Use EMR Diagnosis table
+emr_enc <- tbl(pmap.con, in_schema("dbo", "derived_encounter_dx")) 
+# LooK at variables
+head(emr_enc)
+
+## Create local dataframe with select variables
+emr_enc <- emr_enc %>%
+  select(cohort_id, dx_name, icd10_code, enc_contact_date) %>%
+  mutate(dx_date = enc_contact_date) %>%
+  select(cohort_id, dx_name, icd10_code, dx_date) %>%
+  collect()
+```
+
+\
+
+### 2. PROBLEM_LIST (derived_problem_list)
+
+```{r derived problem list}
+## PROBLEM_LIST Use EMR Diagnosis table
+prob_list <- tbl(pmap.con, in_schema("dbo", "derived_problem_list")) 
+# LooK at variables
+head(prob_list)
+
+## Create local dataframe with select variables
+prob_list <- prob_list %>%
+  select(cohort_id, dx_name, icd10_code, noted_date) %>%
+  mutate(dx_date = noted_date) %>%
+  select(cohort_id, dx_name, icd10_code, dx_date) %>%
+  collect()
+```
+
+\
+
+### 3. HSP_BILLING_DX (derived_hosp_billing_dx)
+
+```{r derived hospital billing dx}
+## HSP_BILLING_DX 
+hosp_billing <- tbl(pmap.con, in_schema("dbo", "derived_hosp_billing_dx")) 
+# LooK at variables
+head(hosp_billing)
+
+## Create local dataframe with select variables
+hosp_billing <- hosp_billing %>%
+  select(cohort_id, dx_name, icd10_code, adm_date_time) %>%
+  collect()
+
+hosp_billing <- hosp_billing %>%
+  mutate(dx_date = date(adm_date_time)) %>%
+  select(cohort_id, dx_name, icd10_code, dx_date)
+```
+
+\
+
+### 4. HSP_ADMIT_DIAG (derived_hosp_admit_dx)
+
+```{r derived hospital admission dx}
+## HSP_ADMIT_DIAG 
+hosp_admit <- tbl(pmap.con, in_schema("dbo", "derived_hosp_admit_dx")) 
+# LooK at variables
+head(hosp_admit)
+
+## Create local dataframe with select variables
+hosp_admit <- hosp_admit %>%
+  select(cohort_id, dx_name, icd10_code, enc_contact_date) %>%
+  mutate(dx_date = enc_contact_date) %>%
+  select(cohort_id, dx_name, icd10_code, dx_date) %>%
+  collect()
+```
+
+\
+
+### 5. MEDICAL HX (derived_medical_hx)
+
+```{r derived medical hx}
+## MEDICAL_HX 
+med_hx <- tbl(pmap.con, in_schema("dbo", "derived_medical_hx")) 
+# LooK at variables
+head(med_hx)
+
+med_hx <- med_hx %>%
+  collect()
+
+
+## Create local dataframe with select variables
+med_hx <- med_hx %>%
+  select(cohort_id, dx_name, icd10_code, contact_date) %>%
+  mutate(dx_date = contact_date) %>%
+  select(cohort_id, dx_name, icd10_code, dx_date) %>%
+  collect()
+```
+
+\
+
+### Now combine the above tables for reference against list of ICD-10s AND filter out records with dx_date after October 23, 2020 (irAE curation in REDCap does not take place after this date)
+
+```{r combine patient dx tables}
+pat_dx_all <- rbind(emr_enc, prob_list, hosp_billing, hosp_admit, med_hx)
+
+pat_dx_all_oct2020 <- filter(pat_dx_all, dx_date < '2020-10-23')
+
+save(pat_dx_all, file = "pat_dx_all.RData")
+save(pat_dx_all_oct2020, file = "pat_dx_all_oct2020.RData")
+```
+
+
+\
+
+**** old: don't use this
+
+```{r emr diagnosis table, results = FALSE}
+## Use EMR Diagnosis table
+emr_diag <- tbl(pmap.con, in_schema("dbo", "derived_emr_diagnosis_info")) 
+# LooK at variables
+head(emr_diag)
+
+## Create local dataframe with select variables
+emr_diagdf <- emr_diag %>%
+  select(cohort_id, build_date, dx_group, dx_id, dx_name, dxsource, first_date, icd10list, icd9list, last_date, num_instances_source, parent_dx_id, sensitive_yn, source_seq) %>%
+  collect()
+
+dim(emr_diagdf)  ## There are 1,770,501 rows in this table  
+
+length(unique(emr_diagdf$cohort_id)) ## 24507 unique cohort_id
+
+
+### Test records against specific IRAE patients to see if dates/toxicities match up
+# a <- filter(emr_diagdf, cohort_id=='TOB007sz809n51')
+# b <- filter(irae_toxdf, cohort_id=='TOB007sz809n51')
+
+
+# c <- filter(emr_diagdf, cohort_id=='TOB025zra2v3f1')
+# d <- filter(irae_toxdf, cohort_id=='TOB025zra2v3f1')
+```
+
+*** Exploratory; can skip 
+
+\
+
+```{r emr diag missingness}
+## Check number of missing values for dx fields (?) ** can do this if we want
+
+#   ## Insert NA for blanKs
+#   emr_diagdf$generic_name <- na_if(admin_medsdf$generic_name, '')
+#   admin_medsdf$medication_name <- na_if(admin_medsdf$medication_name, '')
+#   admin_medsdf$thera_classname <- na_if(admin_medsdf$thera_classname, '')
+#   admin_medsdf$pharm_classname <- na_if(admin_medsdf$pharm_classname, '')
+#   admin_medsdf$pharm_subclassname <- na_if(admin_medsdf$pharm_subclassname, '')
+# 
+# miss_gn_a   <- sum(is.na(admin_medsdf$generic_name))       # 588984 missing
+# miss_mn_a   <- sum(is.na(admin_medsdf$medication_name))    # 0
+# miss_tc_a   <- sum(is.na(admin_medsdf$thera_classname))    # 524979
+# miss_pc_a   <- sum(is.na(admin_medsdf$pharm_classname))    # 523388
+# miss_psc_a  <- sum(is.na(admin_medsdf$pharm_subclassname)) # 531902 
+# 
+# missing_admin <- data.frame(fields = c("generic_name", "medication_name", "thera_classname", 
+#                                         "pharm_classname", "pharm_subclassname"),
+#                              nmissing = c(miss_gn_a, miss_mn_a, miss_tc_a, miss_pc_a, miss_psc_a))
+# 
+# missing_admin_tbl <- Kable(missing_admin, col.names = c("Data field", "No. missing"), caption= "Missing data fields- Med Admin", align='l')
+
+
+    ## only the medication_name field has 0 blanKs.. we will need to use this one
+
+# ## Summarize counts of dx types using "dx_group"
+# dx_group <- Kable(table(emr_diagdf$dx_group), caption = "DX Group Frequency Table- EMR Diagnosis")
+# dx_group  ## There are xx,xxx records for "xxxxxx"
+
+# ## Filter on drug class "ANTINEOPLASTICS"
+# admin_onc <- admin_medsdf %>%
+#   filter(thera_classname=="ANTINEOPLASTICS") 
+#   
+# ## Table of pharmaceutical classes within "antineoplastics"
+# admin_oncmeds <- Kable(table(admin_onc$pharm_classname), caption = "Oncology Classes Frequency Table- Med Admin")
+# admin_oncmeds
+# 
+# ## Filter records associated with anti-PD-1 MAB
+# admin_icionly <- filter(admin_onc, pharm_classname=="ANTINEOPLASTIC,ANTI-PROGRAMMED DEATH-1 (PD-1) MAB")
+# admin_icionly  # There are 493 records for anti-PD1
+# length(unique(admin_icionly$cohort_id))  # There are 45 unique cohort IDs
+
+```
+
+\
+
+#### Use ICD-10 codes to enumerate eligible encounters ... there will be 1 list of codes to be used for all algorithm versions. Some encoutners before the ICD-9 to ICD-10 transition date (oct 2015) but all encounters have already been crosswalked to ICD-10
+
+\
+
+```{r icd setup comments}
+# Search on specific ICD-9 and ICD-10 codes for specific tissue specific dx
+
+# Create vector of ICD10 and ICD9 codes corresponding to dx of interest: 
+
+## JCM: R pacKage ICD might be helpful to map AEs to dx codes
+install.packages('icd.data')
+library(icd.data)
+```
+
+
+\
+
+#### List of Dx codes (crosswalked from Brown V et al.)
+
+\
+
+```{r algorithm 1 Brown V et al icd}
+## This list is from a published paper that used SEER Medicare claims/encounters data to measure IRAE.
+
+## Brown VT, Antol DD, Racsa PN, Ward MA, Naidoo J. Real-World Incidence and Management of Immune-Related Adverse Events from Immune ChecKpoint Inhibitors: Retrospective Claims-Based Analysis. Cancer Investigation. 2021;39(10):789-796. doi:10.1080/07357907.2021.1913502
+
+icdcodes10_1 <- data.frame(codes = c("I49.8", "I49", "I49.9", "I50.1", "I30", "I30.9", "I30.0", "I30.8", "I31.9", "I51.4", "I40", "I40.9", "I40.1", "I40.8", "E11", "E03.9", "E03.8", "E03", "E05.9", "E05", "E27.49", "E27.8", "E27", "J18.9", "J84.89", "J84.114", "J84.113", "G04.9", "G04", "G92.8", "G04.8", "G04.90", "G04.81", "G04.00", "G05.3", "G05", "K52.9", "K50", "K51", "K52", "K52.3", "K52.89", "K52.8", "K51.513", "K51.5", "K51.514", "K51.51", "K51.50", "K51.512", "K51.519", "K75.9", "K75.4", "K75.2", "L30.9", "L20", "L20.9", "L27.9", "L27", "L30.8", "L27.8", "L20.89", "L20.8", "L30", "R21", "D72.12", "D72.810", "D61.9", "D61.3", "D61.1", "D61.2", "D61", "M60", "M60.9", "M60.1", "M60.8", "M60.10", "M60.18", "H57.1", "H57.10", "H35.38", "H35.383", "H35.389", "N28.9", "N08", "N14.19", "N14.2", "N14.1", "N14.4", "L13.0"))
+dim(icdcodes10_1)
+
+
+## Write function to search each member of icd10 column in the icd10list field where dx was recorded as part of a hospital admission
+icd10search <- function(icd10){
+  icdmatch10 <- pat_dx_all_oct2020[grep(pattern=icd10, x=pat_dx_all_oct2020$icd10_code), ]
+  return(as.data.frame(icdmatch10))
+}
+
+## Write function to search each member of icd9 column in the icd9list field where dx was written as part of a hospital admission (we are not including patients from before 2015 so this will not be relevant)
+# icd9search <- function(icd9){
+#  icdmatch9 <- emr_diagdf[grep(pattern=icd9, x=emr_diagdf$icd9list), ]
+#  return(as.data.frame(icdmatch9))
+# }
+
+
+## Use apply() to return matches on all ICD10 codes of interest
+emr_dx10_1 <- apply(icdcodes10_1, 1, icd10search, simplify=TRUE)
+# emr_dx9 <- apply(icdcodes9, 1, icd9search, simplify=TRUE)
+
+
+## Combine results of queries into a single table
+emr_dx_1t <- bind_rows(emr_dx10_1[[1]], emr_dx10_1[[2]], emr_dx10_1[[3]],
+                      emr_dx10_1[[4]], emr_dx10_1[[5]], emr_dx10_1[[6]], 
+                      emr_dx10_1[[7]], emr_dx10_1[[8]], emr_dx10_1[[9]],
+                      emr_dx10_1[[10]], emr_dx10_1[[11]], emr_dx10_1[[12]],
+                      emr_dx10_1[[13]], emr_dx10_1[[14]], emr_dx10_1[[15]], 
+                      emr_dx10_1[[16]], emr_dx10_1[[17]], emr_dx10_1[[18]],
+                      emr_dx10_1[[19]], emr_dx10_1[[20]], emr_dx10_1[[21]],
+                      emr_dx10_1[[22]], emr_dx10_1[[23]], emr_dx10_1[[24]], 
+                      emr_dx10_1[[25]], emr_dx10_1[[26]], emr_dx10_1[[27]],
+                      emr_dx10_1[[28]], emr_dx10_1[[29]], emr_dx10_1[[30]],
+                      emr_dx10_1[[31]], emr_dx10_1[[32]], emr_dx10_1[[33]], 
+                      emr_dx10_1[[34]], emr_dx10_1[[35]], emr_dx10_1[[36]],
+                      emr_dx10_1[[37]], emr_dx10_1[[38]], emr_dx10_1[[39]],
+                      emr_dx10_1[[40]], emr_dx10_1[[41]], emr_dx10_1[[42]], 
+                      emr_dx10_1[[43]], emr_dx10_1[[44]], emr_dx10_1[[45]],
+                      emr_dx10_1[[46]], emr_dx10_1[[47]], emr_dx10_1[[48]],
+                      emr_dx10_1[[49]], emr_dx10_1[[50]], emr_dx10_1[[51]], 
+                      emr_dx10_1[[52]], emr_dx10_1[[53]], emr_dx10_1[[54]],
+                      emr_dx10_1[[55]], emr_dx10_1[[56]], emr_dx10_1[[57]],
+                      emr_dx10_1[[58]], emr_dx10_1[[59]], emr_dx10_1[[60]], 
+                      emr_dx10_1[[61]], emr_dx10_1[[62]], emr_dx10_1[[63]],
+                      emr_dx10_1[[64]], emr_dx10_1[[65]], emr_dx10_1[[66]],
+                      emr_dx10_1[[67]], emr_dx10_1[[68]], emr_dx10_1[[69]], 
+                      emr_dx10_1[[70]], emr_dx10_1[[71]], emr_dx10_1[[72]],
+                      emr_dx10_1[[73]], emr_dx10_1[[74]], emr_dx10_1[[75]],
+                      emr_dx10_1[[76]], emr_dx10_1[[77]], emr_dx10_1[[78]], 
+                      emr_dx10_1[[79]], emr_dx10_1[[80]], emr_dx10_1[[81]],
+                      emr_dx10_1[[82]], emr_dx10_1[[83]], emr_dx10_1[[84]],
+                      emr_dx10_1[[85]], emr_dx10_1[[86]], emr_dx10_1[[87]], 
+                      emr_dx10_1[[88]], emr_dx10_1[[89]])
+
+
+dim(emr_dx_1t) ## 461605 records for codes of interest in icd10list  field
+length(unique(emr_dx_1t$cohort_id)) ## 12,001 unique patient_id with any of the dx of interest in icd10list  
+## Save for later
+save(emr_dx_1t, file = "emr_dx_1t.RData")
+
+load(file = "emr_dx_1t.RData")
+
+
+## Hospital only- just out of curiosity
+# emr_dx_1t_hosp <- filter(emr_dx_1t, dxsource=="HSP_ADMIT_DIAG")
+# dim(emr_dx_1t_hosp) ## 4513    records for codes of interest in icd10list or icd9list field during hospital admission
+# length(unique(emr_dx_1t_hosp$cohort_id)) ## 2633 unique patient_id with any of the dx of interest in icd10list
+```
+
+\
+
+#### Algorithms (all): Exclude patients from this list who have a COVID_19 diagnosis (acute COVID will mimic IRAE in some cases, especially those implicating lungs/cardiovascular)
+
+\
+
+```{r algorithm exclude covid patients}
+
+## Derive list of patients with a COVID diagnosis using icd10 codes
+covidcodes <- data.frame(codes = c("U07.1", "B34.2", "B97.2", "J12.81"))
+dim(covidcodes)
+
+
+## Write function to search each member of icd10 column in the icd10list field where dx was recorded as part of a hospital admission
+covidsearch <- function(covid){
+  covidmatch <- pat_dx_all_oct2020[grep(pattern=covid, x=pat_dx_all_oct2020$icd10_code), ]
+  return(as.data.frame(covidmatch))
+}
+
+emr_covid <- apply(covidcodes, 1, covidsearch, simplify=TRUE)
+
+
+## Combine results of queries into a single table
+emr_covid_t <- bind_rows(emr_covid[[1]], emr_covid[[2]], 
+                       emr_covid[[3]], emr_covid[[4]])
+
+## Save to directory for later use
+save(emr_covid_t, file = "emr_covid_t.Rdata")
+
+## Load if need be 
+#load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/emr_covid_t.RData")
+View(emr_covid_t)
+
+## No. of unique patients with COVID in database
+length(unique(emr_covid_t$cohort_id))  # 253
+
+## Load diag list saved earlier if need be 
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/emr_dx_1t.RData")
+
+## Exclude patients on "irAE" list who are also on COVID list
+emr_dx_1t_covidexc <- subset(emr_dx_1t, !(cohort_id %in% emr_covid_t$cohort_id))
+
+## Save to directory
+save(emr_dx_1t_covidexc, file = "emr_dx_1t_covidexc.Rdata")
+
+dim(emr_dx_1t_covidexc)
+dim(emr_dx_1t)
+
+length(unique(emr_dx_1t$cohort_id)) # 12001 "irae" patients with no filter
+length(unique(emr_dx_1t_covidexc$cohort_id)) # 11812 "irae" patients with covid patients excluded
+```
+
+\
+
+#### Algorithms (all except 3): Merge list of "IRAE" dx with list of ICI patients (with irAE dx after ICI index date).
+
+\
+
+```{r algorithm merge dx with ICI exposure cohort}
+
+## Load emr_dx patient list if need be 
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/emr_dx_1t_covidexc.RData")
+
+## Load ICI rx index patient list if need be
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/ICI_rx_index.RData")
+
+## Filter on patient being exposed to ICI
+emr_dx_ICI_1 <- emr_dx_1t_covidexc[emr_dx_1t_covidexc$cohort_id %in% ICI_rx_index$cohort_id, ] ## 8787 "IRAE" dx associated with patients on ICI exposure list
+length(unique(emr_dx_ICI_1$cohort_id)) ## 1248 unique patient ID associated with ICI rx "IRAE" dx
+
+
+## Filter on irAE dx date after ICI index date
+  # Merge the ICI/dx list with the dx list on common cohort_id
+  dx_ICI_merge_1 <- merge(ICI_rx_index, emr_dx_ICI_1, by = "cohort_id")
+  
+  ## Filter on irAE "dx" date > index date
+  ICI_IRAE_1 <- dx_ICI_merge_1[dx_ICI_merge_1$dx_date >= dx_ICI_merge_1$ordering_date, ] ## 34785    observations meet this criteria... 
+  dim(ICI_IRAE_1) ## 34785 observations
+  
+ # View(ICI_IRAE_1)
+  
+  ### Why are there duplicate entries for almost all patients? 
+  
+  ### Need to de-duplicate dates of service to eliminate records from the same date/diagnosis made in different settings.... 
+  
+  ### Can eliminate if record has the same patient ID, date, and ICD code [right?] 
+ICI_IRAE_1_dedupe <- ICI_IRAE_1[!duplicated(ICI_IRAE_1[c(1,5,6)]),] 
+dim(ICI_IRAE_1_dedupe) ## 19774   observations with duplicates removed
+#View(ICI_IRAE_1_dedupe)
+```
+
+\
+
+### Algorithms (all except 3) Mark first "IRAE" dx and create running count of encounters
+
+\
+
+
+```{r irae sequence}
+## Mark the first dx per patient and count appearances
+
+# Group the data by ID and create new columns indicating the first appearance of the value
+ICI_IRAE_1_dedupe <- ICI_IRAE_1_dedupe  %>%
+  arrange(cohort_id, dx_date) %>%
+  group_by(cohort_id) %>%
+  mutate(first_appearance = ifelse(row_number() == 1, 1, 0)) %>%
+  mutate(RunningCount = cumsum(cohort_id == lag(cohort_id, default = first(cohort_id))))
+
+# Print the result
+#View(ICI_IRAE_1_dedupe) 
+
+## Create another table that just counts appearances per person
+appearances_table_1 <- count(ICI_IRAE_1_dedupe, cohort_id)
+
+
+
+## This person had a chart review ascertained IRAE... 
+# a <- filter(ICI_IRAE1_dedupe, cohort_id == "TOB007sz809n51")
+```
+
+
+\
+
+#### Algorithms (all except 3): Flag specific AE toxicities for sub-analysis (pneumonitis, colitis, hepatitis)
+
+\
+
+```{r algorithms flag pneumonitis colitis and hepatitis cases}
+pneumcolhepcodes <- data.frame(codes = c("J18.9", "J84.89", "J84.114", "J84.113", "K52.9", "K50", "K51", "K52", "K52.3", "K52.89", "K52.8", "K51.513", "K51.5", "K51.514", "K51.51", "K51.50", "K51.512", "K51.519","K75.9","K75.4","K75.2"))
+dim(pneumcolhepcodes) 
+
+
+## Write function to search each member of icd10 column in the icd10list field where dx was recorded
+pneumcolhepsearch <- function(pneumcolhep){
+  pneumcolhepmatch <- ICI_IRAE_1_dedupe[grep(pattern=pneumcolhep, x=ICI_IRAE_1_dedupe$icd10_code), ]
+  return(as.data.frame(pneumcolhepmatch))
+}
+
+ICI_IRAE_pneumcolhep <- apply(pneumcolhepcodes, 1, pneumcolhepsearch, simplify=TRUE)
+
+
+## Combine results of queries into a single table
+ICI_IRAE_pneumcolhep_t <- bind_rows(ICI_IRAE_pneumcolhep[[1]], 
+                                    ICI_IRAE_pneumcolhep[[2]], 
+                                    ICI_IRAE_pneumcolhep[[3]], 
+                                    ICI_IRAE_pneumcolhep[[4]],
+                         ICI_IRAE_pneumcolhep[[5]], ICI_IRAE_pneumcolhep[[5]], 
+                         ICI_IRAE_pneumcolhep[[7]], ICI_IRAE_pneumcolhep[[8]],
+                         ICI_IRAE_pneumcolhep[[9]], ICI_IRAE_pneumcolhep[[10]], 
+                         ICI_IRAE_pneumcolhep[[11]], ICI_IRAE_pneumcolhep[[12]],
+                         ICI_IRAE_pneumcolhep[[13]], ICI_IRAE_pneumcolhep[[14]], 
+                         ICI_IRAE_pneumcolhep[[15]], ICI_IRAE_pneumcolhep[[16]],
+                         ICI_IRAE_pneumcolhep[[17]], ICI_IRAE_pneumcolhep[[18]], 
+                         ICI_IRAE_pneumcolhep[[19]], ICI_IRAE_pneumcolhep[[20]], 
+                         ICI_IRAE_pneumcolhep[[21]])
+
+dim(ICI_IRAE_pneumcolhep_t) ## 4357 records
+
+ICI_IRAE_pneumcolhep_t1 <- ICI_IRAE_pneumcolhep_t %>%
+  select(cohort_id, dx_date, icd10_code) %>%
+  mutate(row_id = str_c(cohort_id,':',dx_date,':',icd10_code))
+
+## Add indicator variable in ICI_IRAE dataframe to add pneumcolhep indicator variable to that dataframe
+ICI_IRAE_1_dedupe <- ICI_IRAE_1_dedupe %>%
+  mutate(row_id = str_c(cohort_id,':',dx_date,':',icd10_code))
+
+ICI_IRAE_1_dedupe$pneumcolhep <- ifelse(ICI_IRAE_1_dedupe$row_id %in% ICI_IRAE_pneumcolhep_t1$row_id, 1, 0)
+
+ICI_IRAE_1_dedupe <- ICI_IRAE_1_dedupe %>%
+  mutate(dx_date = as.Date(dx_date))
+
+summary(ICI_IRAE_1_dedupe)
+
+## Save to directory
+save(ICI_IRAE_1_dedupe, file = "ICI_IRAE_1_dedupe.Rdata")
+
+## Load
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/ICI_IRAE_1_dedupe.RData")
+
+#ICI_IRAE_1_dedupe$pneumcolhepsev <- ifelse(ICI_IRAE_1_dedupe$row_id %in% ICI_IRAE_pneumcolhep_t1$row_id & ICI_IRAE_1_dedupe$ae_grade %in% c("3","4","5"), 1, 0) 
+### I don't think we have ae_grade mapped to the the PMAP derived list of AE... can't do this
+```
+
+\
+
+### Algorithms (all except 2): irAE treatment Rx (Corticosteroids, other tx that are guideline recommended)
+** Algorithm 1, 5: within +/- 40 days of "IRAE" Dx date
+** Algorithm 3: any Rx (no dx requirement)
+** Algorithm 4: Anytime before "irAE" Dx date or up to 10 days after
+** Algorithm 6: TBD
+
+\
+
+```{r irae tx admin}
+# Derive list of corticosteroid recipients and do inner join on list of possible IRAE Dx
+
+## Use Medication Admin table- dataframe created in the "exposure derivation" step but can do this again if need be
+admin_meds <- tbl(pmap.con, in_schema("dbo", "derived_med_admin"))
+
+# Look at variables
+head(admin_meds)
+
+## Create local dataframe with select variables
+admin_medsdf <- admin_meds %>%
+  select(cohort_id, pat_enc_csn_id, order_med_id, hosp_admsn_time, hosp_disch_time, generic_name, medication_name, thera_classname, pharm_classname, pharm_subclassname, ordering_date, order_end_time, scheduled_time, route, site, sig, dose_unit) %>%
+  collect()
+
+# summary(admin_medsdf)
+dim(admin_medsdf)  ## There are 5803714 rows in this table   
+head(admin_medsdf)
+```
+
+\
+
+#### Filter to records before October 23, 2023
+
+\
+
+```{r cortico and other tx filter before October 23 2023}
+admin_medsdf1 <- filter(admin_medsdf, ordering_date < "2020-10-23") ## 3669432 records
+```
+
+\
+
+#### Flag irAE tx within the allowed timeframe 
+
+\
+
+```{r cortico and other irae tx admin search}
+## We will need to use the medication_name field to minimize the effect of missing data  
+
+## Search for corticosteroid Rx using the med_name field
+## Keywords are prednisone and methylprednisolone (and infliximab, not a corticosteroid) as well as triamcinolone/other topical steroids (skin tox) and levothyroxine (thyroid tox) (as per Brahmer et al. guidance 2016) (NOTE: additional topic steroids added after consult with J Murray)
+
+## Create column of corticosteroid keywords (plus infliximab) (NO: Want more inclusive list for this analysis)
+# cortico <- data.frame(code = c("PREDNISONE", "METHYLPREDNISOLONE", "INFLIXIMAB"))
+# dim(cortico)
+
+## Create column of cortico+other treatment
+irae_tx <- data.frame(code = c("PREDNISONE", "METHYLPREDNISOLONE", 
+                               "INFLIXIMAB", 
+                               "TRIAMCINOLONE", "BETAMETHASONE", "CLOBETASOL", "DIFLORASONE",  "FLUOCINONIDE", "FLURANDRENOLIDE", "HALOBETASOL", "AMCINONIDE", "DESOXIMETASONE", "DIFLORASONE", "HALCINONIDE", "FLUTICASONE", "FLUOCINOLONE", "MOMETASONE", "ALCLOMETASONE", "DESONIDE", 
+                               "LEVOTHYROXINE"))
+dim(irae_tx) # 20
+
+
+## Write function to search each member of med_name field where irAE treatment (cortico, etc) was recorded as part of a patient encounter
+
+# cortico_search_a <- function(cortico){
+#   cortico_match <- admin_medsdf[grep(pattern=cortico, x=admin_medsdf$medication_name), ]
+#   return(as.data.frame(cortico_match))
+# }
+
+  ## For all irAE tx
+  irae_tx_search_a <- function(irae_tx){
+    irae_tx_match <- admin_medsdf1[grep(pattern=irae_tx, x=admin_medsdf1$medication_name), ]
+    return(as.data.frame(irae_tx_match))
+  }
+
+### Use apply() to return matches on corticosteroid keywords of interest
+# cortico_rx_a <- apply(cortico, 1, cortico_search_a, simplify=TRUE)
+# cortico_rx_at <- bind_rows(cortico_rx_a[[1]], cortico_rx_a[[2]], cortico_rx_a[[3]])
+
+irae_tx_a <- apply(irae_tx, 1, irae_tx_search_a, simplify=TRUE)
+
+irae_tx_at <- bind_rows(irae_tx_a[[1]], irae_tx_a[[2]], irae_tx_a[[3]],
+                        irae_tx_a[[4]], irae_tx_a[[5]], irae_tx_a[[6]],
+                        irae_tx_a[[7]], irae_tx_a[[8]], irae_tx_a[[9]],
+                        irae_tx_a[[10]], irae_tx_a[[11]], irae_tx_a[[12]],
+                        irae_tx_a[[13]], irae_tx_a[[14]], irae_tx_a[[15]],
+                        irae_tx_a[[16]], irae_tx_a[[17]], irae_tx_a[[18]],
+                        irae_tx_a[[19]], irae_tx_a[[20]])
+
+## Save this dataframe for later use ########
+save(irae_tx_at, file = "irae_tx_at.Rdata")
+
+## Load irae_tx_at if need be
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_tx_at.Rdata")
+
+head(irae_tx_at)
+
+## Filter use of "topical" steroids to topical route of administration only 
+irae_tx_at <- irae_tx_at %>%
+  mutate(nontopical = ifelse(
+    (medication_name %in% irae_tx_at[grep("TRIAMCINOLONE", irae_tx_at$medication_name), ]$medication_name & route !="Topical" |
+     medication_name %in% irae_tx_at[grep("BETAMETHASONE", irae_tx_at$medication_name), ]$medication_name & route !="Topical" |
+     medication_name %in% irae_tx_at[grep("CLOBETASOL", irae_tx_at$medication_name), ]$medication_name & route !="Topical" |
+     medication_name %in% irae_tx_at[grep("DIFLORASONE", irae_tx_at$medication_name), ]$medication_name & route !="Topical" |
+     medication_name %in% irae_tx_at[grep("FLUOCINONIDE", irae_tx_at$medication_name), ]$medication_name & route !="Topical" |
+     medication_name %in% irae_tx_at[grep("FLURANDRENOLIDE", irae_tx_at$medication_name), ]$medication_name & route !="Topical" |
+     medication_name %in% irae_tx_at[grep("HALOBETASOL", irae_tx_at$medication_name), ]$medication_name & route !="Topical" |
+     medication_name %in% irae_tx_at[grep("AMCINONIDE", irae_tx_at$medication_name), ]$medication_name & route !="Topical" |
+     medication_name %in% irae_tx_at[grep("DESOXIMETASONE", irae_tx_at$medication_name), ]$medication_name & route !="Topical" |
+     medication_name %in% irae_tx_at[grep("DIFLORASONE", irae_tx_at$medication_name), ]$medication_name & route !="Topical" |
+     medication_name %in% irae_tx_at[grep("HALCINONIDE", irae_tx_at$medication_name), ]$medication_name & route !="Topical" |
+     medication_name %in% irae_tx_at[grep("FLUTICASONE", irae_tx_at$medication_name), ]$medication_name & route !="Topical" |
+     medication_name %in% irae_tx_at[grep("FLUOCINOLONE", irae_tx_at$medication_name), ]$medication_name & route !="Topical" |
+     medication_name %in% irae_tx_at[grep("MOMETASONE", irae_tx_at$medication_name), ]$medication_name & route !="Topical" |
+     medication_name %in% irae_tx_at[grep("ALCLOMETASONE", irae_tx_at$medication_name), ]$medication_name & route !="Topical" |
+     medication_name %in% irae_tx_at[grep("DESONIDE", irae_tx_at$medication_name), ]$medication_name & route !="Topical"), 1, 0))
+
+table(irae_tx_at$nontopical)
+
+# irae_tx_nontopical <- filter(irae_tx_at, nontopical==1)
+# 
+# View(irae_tx_nontopical)
+
+## Filter out nontopical use of "topical" steroids 
+irae_tx_at <- irae_tx_at %>%
+  filter(nontopical ==0)
+
+table(irae_tx_at$nontopical) ## no more nontopical use of topical corticosteroid
+
+### Indicator variable for dose 50mg for prednisone or 40mg for methylprednisolone or 250mg for infliximab (these are threshold doses for irAE treatment per Brahmer guidance) (no threshold for triamcinolone/etc, levothyroxine)
+
+  ## List of all irAE tx
+irae_tx_at <- irae_tx_at %>%
+  mutate(sig_num = round(as.numeric(sig)),0) %>%
+  mutate(pred_50_equiv = ifelse(
+    (medication_name %in% irae_tx_at[grep("PREDNISONE", irae_tx_at$medication_name), ]$medication_name & sig_num >=50) 
+                                | 
+      (medication_name %in% irae_tx_at[grep("METHYLPREDNISOLONE", irae_tx_at$medication_name), ]$medication_name & sig_num >=40) 
+                                | 
+      (medication_name %in% irae_tx_at[grep("INFLIXIMAB", irae_tx_at$medication_name), ]$medication_name & sig_num >=250) 
+                                   | 
+      (medication_name %in% irae_tx_at[grep("TRIAMCINOLONE", irae_tx_at$medication_name), ]$medication_name) 
+                                   | 
+      (medication_name %in% irae_tx_at[grep("LEVOTHYROXINE", irae_tx_at$medication_name), ]$medication_name), 
+                                   1, 0))
+
+
+
+## What about patients with several small doses on same date/time that add up to >50? Not accounted for here.
+
+## Create dataframe with just higher-dose tx  
+irae_tx_at_50 <- filter(irae_tx_at, pred_50_equiv==1)
+
+
+dim(irae_tx_at) ## 75261 records for corticosteroid of interest in medication_name field
+length(unique(irae_tx_at$cohort_id)) ## 5145 unique patient_id with corticosteroid rx
+
+
+dim(irae_tx_at_50) ## 50594 records for corticosteroid of interest in medication_name field >50mg
+length(unique(irae_tx_at_50$cohort_id)) ## 4362 unique patient_id with corticosteroid rx >50mg
+
+
+# Group the data by ID and create new columns indicating the first appearance of the value
+
+  
+  ## irAE tx- all dose
+  irae_tx_at <- irae_tx_at  %>%
+    arrange(cohort_id, ordering_date) %>%
+    group_by(cohort_id) %>%
+    mutate(first_appearance = ifelse(row_number() == 1, 1, 0)) %>%
+    mutate(RunningCount = cumsum(cohort_id == lag(cohort_id, default = first(cohort_id))))
+
+  
+
+  ## irAE tx over 50mg prednisone equivalent
+  irae_tx_at_50 <- irae_tx_at_50  %>%
+    arrange(cohort_id, ordering_date) %>%
+    group_by(cohort_id) %>%
+    mutate(first_appearance = ifelse(row_number() == 1, 1, 0)) %>%
+    mutate(RunningCount = cumsum(cohort_id == lag(cohort_id, default = first(cohort_id))))
+  
+
+# Assess the result
+
+  # All doses
+  View(irae_tx_at)
+  dim(irae_tx_at)
+  length(unique(irae_tx_at$cohort_id)) # 3932
+  
+  ## Dose >50mg
+  View(irae_tx_at_50)
+  dim(irae_tx_at_50)
+  length(unique(irae_tx_at_50$cohort_id)) # 3336
+  
+```
+
+**** Note: will NOT exclude prevalent cortico users (flareup of prior illness can be considered irAE) and prior use shouldn't disqualify from having irAE in the future- "incident user" tables not being used for purpose of irAE ascertainment
+
+```{r tag prevalent irae tx users (cortico index date is in year preceding ICI index date)}
+## Create dataframe with each cortico patient's cortico index date
+
+# All doses
+irae_tx_index <- irae_tx_at %>%
+  filter(first_appearance==1) %>%
+  select(cohort_id, medication_name, ordering_date, first_appearance)
+
+# Dose >50mg
+irae_tx_index_50 <- irae_tx_at_50 %>%
+  filter(first_appearance==1) %>%
+  select(cohort_id, medication_name, ordering_date, first_appearance)
+
+
+## Merge cortico and ICI lists to be able to compare cortico index rx to ICI index rx
+
+## All dose
+irae_tx_ICI_index_compare <- inner_join(irae_tx_index, ICI_rx_index, by = "cohort_id")
+
+# Dose >50mg
+irae_tx_index_compare_50 <- inner_join(irae_tx_index_50, ICI_rx_index, by = "cohort_id")
+
+
+## Pull list of patient_id where cortico index date is in year preceding ICI index date
+
+# All doses
+prevalent_irae_tx <- filter(irae_tx_ICI_index_compare, ordering_date.x-ordering_date.y<0 & ordering_date.x-ordering_date.y>-365)
+length(unique(prevalent_irae_tx$cohort_id)) ## 139 prevalent users (any cortico dose)
+
+# Dose >50mg
+prevalent_irae_tx_50 <- filter(irae_tx_index_compare_50, ordering_date.x-ordering_date.y<0 & ordering_date.x-ordering_date.y>-365)
+length(unique(prevalent_irae_tx_50$cohort_id)) ## 127 prevalent users (cortico dose >50)
+
+
+
+## Remove them from cortico dataframe
+
+# All doses
+irae_tx_at_incident <- subset(irae_tx_at, !(cohort_id %in% prevalent_irae_tx$cohort_id))
+length(unique(irae_tx_at_incident$cohort_id)) # 3843
+
+
+# Dose >50mg
+irae_tx_at_50_incident <- subset(irae_tx_at_50, !(cohort_id %in% prevalent_irae_tx_50$cohort_id))
+length(unique(irae_tx_at_50_incident$cohort_id)) # 3254
+
+```
+
+
+** Exploratory: Don't use this 
+
+```{r compare to med_order table}
+## For JCM--- find 1:1 comparison of med admin and med order, look at patterns.
+## Use derived med ADMIN table
+order_meds <- tbl(pmap.con, in_schema("dbo", "derived_med_orders"))
+
+# Look at variables
+head(order_meds)
+
+## Create local dataframe with select variables
+order_medsdf <- order_meds %>%
+  select(cohort_id, pat_enc_csn_id, start_date, end_date, med_name, order_mode, dose, unit, sig, therapeutic_class, pharmaceutical_class, pharmaceutical_subclass, ordering_dttm, discon_time, discon_rsn, current_med_yn, discont_med_yn, order_med_id, medication_id, ord_status, route, quantity, refills, number_of_doses, doses_remaining) %>%
+  collect()
+
+dim(order_medsdf)  ## There are 3,651,907 rows in this table 
+
+length(unique(order_medsdf$cohort_id)) ## 22,991
+
+## Pull the med order records corresponding to the corticosteroid admins
+
+## Cortico
+cortico_rx_order <- filter(order_medsdf, order_med_id %in% cortico_rx_at_incident$order_med_id)
+
+## Cortico 50mg
+cortico_rx_50_order <- filter(order_medsdf, order_med_id %in% cortico_rx_at_50_incident$order_med_id)
+
+## All irae tx
+irae_tx_order <- filter(order_medsdf, order_med_id %in% irae_tx_at_incident$order_med_id)
+
+
+## Cortico 50mg
+irae_tx_50_order <- filter(order_medsdf, order_med_id %in% irae_tx_at_50_incident$order_med_id)
+
+
+## Compare corticosteroid orders
+dim(cortico_rx_at_incident) # 39837        
+dim(cortico_rx_order) # 14808    
+
+## same no. of patients?
+length(unique(cortico_rx_at_incident$cohort_id)) ## 3360
+length(unique(cortico_rx_order$cohort_id)) ## 3360
+
+## 
+length(unique(cortico_rx_order$order_med_id)) # 14808
+
+```
+
+\
+
+```{r irae tx admin dedupe}
+## Deduplicate list of cortico Rx (where there is multiple records from same date/time/dose)
+
+# All doses
+irae_tx_at_dedupe <- irae_tx_at[!duplicated(irae_tx_at[c(1,6,10)]),] 
+
+dim(irae_tx_at_dedupe)
+length(unique(irae_tx_at_dedupe$cohort_id)) # 3843
+
+save(irae_tx_at_dedupe, file = "irae_tx_at_dedupe.Rdata")
+
+
+# Dose >50mg
+irae_tx_at_50_dedupe <- irae_tx_at_50[!duplicated(irae_tx_at_50[c(1,6,10)]),] 
+
+dim(irae_tx_at_50_dedupe)
+length(unique(irae_tx_at_50_dedupe$cohort_id)) # 3336
+
+save(irae_tx_at_50_dedupe, file = "irae_tx_at_50_dedupe.Rdata")
+
+## Create another table that just counts appearances per person
+
+# All doses
+irae_tx_at_dedupe.table <- count(irae_tx_at_dedupe, cohort_id)
+
+# Dose >50mg
+irae_tx_at_50_dedupe.table <- count(irae_tx_at_50_dedupe, cohort_id)
+#summary(cortico_rx_at_50_dedupe.table)
+
+
+## Create a table with just the cohort ID and first date of corticosteroid use (index date/Time 0)
+
+# All doses
+irae_tx_at_dedupe.index <- subset(irae_tx_at_dedupe,first_appearance==1 & RunningCount==1, select =c("cohort_id","medication_name","ordering_date"))
+
+View(irae_tx_at_dedupe.index)
+
+length(unique(irae_tx_at_dedupe.index$cohort_id)) ## 3932 unique cohort_id
+
+## Dose >50mg
+irae_tx_at_50_dedupe.index <- subset(irae_tx_at_50_dedupe,first_appearance==1 & RunningCount==1, select =c("cohort_id","medication_name","ordering_date"))
+
+length(unique(irae_tx_at_50_dedupe.index$cohort_id)) ## 3336 unique cohort_id
+```
+
+** Don't use this chunk
+
+```{r cortico med order list dont use}
+## We can also use the cortico order list to find outpatient cortico use (less acute cases)- in this case we require a refill for it to qualify as cortico exposure (they filled/used the first Rx and came bacK for a second)
+
+## Use Medication Order table- 
+order_meds <- tbl(pmap.con, in_schema("dbo", "derived_med_orders"))
+
+# LooK at variables
+head(order_meds)
+
+## Create local dataframe with select variables
+order_medsdf <- order_meds %>%
+  select(cohort_id, pat_enc_csn_id, start_date, end_date, med_display_name, med_name, order_mode, dose, unit, sig, frequency, therapeutic_class, pharmaceutical_class, pharmaceutical_subclass, ordering_dttm, discon_time, discon_rsn, current_med_yn, discont_med_yn, ord_status, route, refills, number_of_doses) %>%
+  collect()
+
+# summary(order_medsdf)
+dim(order_medsdf)  ## There are 3,641,245 rows in this table   
+head(order_medsdf)
+```
+
+** Don't use this chunk 
+
+```{r cortico order search dont use}
+## We will need to use the med_name field to minimize the effect of missing data  
+
+## Search for corticosteroid Rx using the med_name field
+## Keywords are prednisone and methylprednisolone (as per Brahmer et al. guidance 2016)
+
+## Create column of corticosteroid Keywords
+# cortico <- data.frame(code = c("PREDNISONE", "METHYLPREDNISOLONE"))
+# dim(cortico)
+
+
+## Write function to search each member of med_name field where corticosteroid was recorded as part of a hospital admission
+cortico_search_o <- function(cortico){
+  cortico_match <- order_medsdf[grep(pattern=cortico, x=order_medsdf$med_name), ]
+  return(as.data.frame(cortico_match))
+}
+
+### Use apply() to return matches on all corticosteroid Keywords of interest
+cortico_rx_o <- apply(cortico, 1, cortico_search_o, simplify=TRUE)
+cortico_rx_ot <- bind_rows(cortico_rx_o[[1]], cortico_rx_o[[2]])
+
+dim(cortico_rx_ot) ## 38,673 records for corticosteroid of interest in med_name field
+length(unique(cortico_rx_ot$cohort_id)) ## 7,024 unique patient_id with corticosteroid rx
+
+
+# Group the data by ID and create new columns indicating the first appearance of the value, calculate gap in days between successive orders
+cortico_rx_ot <- cortico_rx_ot  %>%
+  arrange(cohort_id, ordering_dttm) %>%
+  group_by(cohort_id) %>%
+  mutate(first_appearance = ifelse(row_number() == 1, 1, as.integer(!duplicated(pharmaceutical_subclass)))) %>%
+  mutate(RunningCount = cumsum(cohort_id == lag(cohort_id, default = first(cohort_id)))) %>%
+  mutate(order_gap_days = round(difftime(ordering_dttm, lag(ordering_dttm), units = "days")))
+
+# Print the result
+View(cortico_rx_ot)
+
+## Create another table that just counts appearances per person
+cortico_rx_o.table <- count(cortico_rx_ot, cohort_id)
+
+View(cortico_rx_table)
+n_cortico <- cortico_rx_table$n
+hist(n_cortico, breaks = 100)
+
+## Create a table with just the cohort ID and first date of corticosteroid use (index date/Time 0)
+cortico_rx_o.index <- subset(cortico_rx_ot,first_appearance==1 & RunningCount==1, select = c("cohort_id","medication_name","ordering_date"))
+length(unique(cortico_rx_o.index$cohort_id)) ## 3,300 unique cohort_id
+```
+
+\
+
+#### Algorithm 1,4,5 "Test" positives: Merge lists 1 and 2 to find those with a "IRAE" DX and associated corticosteroid Rx
+
+\
+
+** Don't use this chunk
+
+```{r method 1 merge IRAE dx and corticosteroid index list- method 1 dont use}
+## Filter corticosteroid list on membership in dx / ICI list
+
+## All doses
+irae_tx_IRAE <- irae_tx_at_dedupe.index[irae_tx_at_dedupe.index$cohort_id %in% ICI_IRAE_1_dedupe$cohort_id, ]
+length(unique(irae_tx_IRAE$cohort_id)) ## 470 unique patient ID with corticosteroid on ICI/"IRAE" list, this is the list of unique patients and their corticosteroid index date who also were on ICI and have a emr encounter ICD code for dx that might be IRAE
+
+## Dose >50mg
+irae_tx_IRAE_50 <- irae_tx_at_50_dedupe.index[irae_tx_at_50_dedupe.index$cohort_id %in% ICI_IRAE_1_dedupe$cohort_id, ]
+length(unique(irae_tx_IRAE_50$cohort_id)) ## 429 unique patient ID with corticosteroid on ICI/"IRAE" list, this is the list of unique patients and their corticosteroid >50mg prednisone equivalent index date who also were on ICI and have a emr encounter ICD code for dx that might be IRAE
+
+## Merge the ICI/dx list with the cortico rx list on common cohort_id
+
+# All doses
+  irae_tx_IRAE_merge <- inner_join(ICI_IRAE_1_dedupe, irae_tx_IRAE, by = "cohort_id") 
+
+# Dose >50mg
+  irae_tx_IRAE_merge_50 <- inner_join(ICI_IRAE_1_dedupe, irae_tx_IRAE_50, by = "cohort_id") 
+      ## This is a list of every corticosteroid Rx among people with ICI/"IRAE"- each row is a unique corticosteroid rx (?)
+  
+  
+  ## Filter on index date less than 10-day buffer period before or after dx date
+  
+    # All doses
+    irae_tx_IRAE1 <- irae_tx_IRAE_merge[abs(irae_tx_IRAE_merge$ordering_date.y-irae_tx_IRAE_merge$first_date1)<11, ] ## 551 observations meet this criteria
+  
+  length(unique(irae_tx_IRAE1$cohort_id)) ## 256
+  
+  # Dose >50mg
+  
+  irae_tx_IRAE1_50 <- irae_tx_IRAE_merge_50[abs(irae_tx_IRAE_merge_50$ordering_date.y-irae_tx_IRAE_merge_50$first_date1)<11, ] ## 517 observations meet this criteria
+  
+  length(unique(irae_tx_IRAE1_50$cohort_id)) ## 232
+```
+
+\
+
+** Use this instead
+
+\
+
+```{r merge method 2 filter all irae tx records by membership on ICI exposure and dx list}
+
+## Reference entire list of cortico rx (not just first one) for each "IRAE" dx?
+
+## Load required files (if need be)
+
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/ICI_IRAE_1_dedupe.RData")
+
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_tx_at_dedupe.Rdata")
+
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/irae_tx_at_50_dedupe.Rdata")
+
+
+#View(ICI_IRAE_1_dedupe)
+
+
+## Create dataframe with just cohort_id and each date of corticosteroid rx
+
+    # All doses
+  irae_tx_at_dedupe.allrx <- subset(irae_tx_at_dedupe, select =c("cohort_id","medication_name","sig_num","dose_unit","ordering_date","RunningCount"))
+  
+  # Dose >50mg
+  irae_tx_at_50_dedupe.allrx <- subset(irae_tx_at_50_dedupe, select =c("cohort_id","medication_name","sig_num","dose_unit","ordering_date","RunningCount"))
+
+  
+## Filter corticosteroid list on membership in dx / ICI list
+  
+    # All doses
+  irae_tx_all_IRAEpat <- irae_tx_at_dedupe.allrx[irae_tx_at_dedupe.allrx$cohort_id %in% ICI_IRAE_1_dedupe$cohort_id, ] 
+  
+  length(unique(irae_tx_all_IRAEpat$cohort_id)) ## 399 unique patient ID with corticosteroid on ICI/"IRAE" list, this is the list of unique patients and their corticosteroid index date who also were on ICI and have a emr encounter ICD code for dx that might be IRAE
+  
+  # Dose >50mg
+  irae_tx_all_IRAEpat_50 <- irae_tx_at_50_dedupe.allrx[irae_tx_at_50_dedupe.allrx$cohort_id %in% ICI_IRAE_1_dedupe$cohort_id, ] 
+  
+  length(unique(irae_tx_all_IRAEpat_50$cohort_id)) ## 356 unique patient ID with corticosteroid on ICI/"IRAE" list, this is the list of unique patients and their corticosteroid index date who also were on ICI and have a emr encounter ICD code for dx that might be IRAE
+```
+
+\
+
+#### Test positives: Algorithm 1, 5: Require the corticosteroid dose to be within a 40-day window before or after the "IRAE" dx. 
+
+\
+
+```{r cortico 40day buffer}
+## Filter on corticosteroid rx date within 40-day buffer period before or after "IRAE" dx
+   
+    # All doses
+   irae_tx_all_IRAE_merge <- inner_join(ICI_IRAE_1_dedupe, irae_tx_all_IRAEpat, by = "cohort_id") 
+        ## This is a list of every corticosteroid Rx among people with ICI/"IRAE"- each row is a unique corticosteroid rx * "IRAE" dx (?) so each "IRAE" dx is multiplied x the number of unique corticosteroid rx, so each dx date can be compared to all rx dates
+  
+  # Dose >50mg
+   irae_tx_all_IRAE_merge_50 <- inner_join(ICI_IRAE_1_dedupe, irae_tx_all_IRAEpat_50, by = "cohort_id") 
+   
+## Filter on Rx DATE less than 10-day buffer period before or after dx date
+ 
+   summary(irae_tx_all_IRAE_merge)
+     # All doses
+    irae_tx_all_IRAE_1 <- irae_tx_all_IRAE_merge[abs(irae_tx_all_IRAE_merge$ordering_date.y-irae_tx_all_IRAE_merge$dx_date)<41, ] ## .. observations meet this criteria
+    
+  dim(irae_tx_all_IRAE_1) # 999 individual records, meaning possibly multi-system IRAE or multiple successive IRAE in the same patient
+    
+  length(unique(irae_tx_all_IRAE_1$cohort_id)) ## 315 unique patient ID
+   
+   # Dose >50mg
+   irae_tx_all_IRAE_1_50 <- irae_tx_all_IRAE_merge_50[abs(irae_tx_all_IRAE_merge_50$ordering_date.y-irae_tx_all_IRAE_merge_50$dx_date)<41, ] ## .. observations meet this criteria
+    
+  dim(irae_tx_all_IRAE_1_50) # 773 individual records, meaning possibly multi-system IRAE or multiple successive IRAE in the same patient
+    
+  length(unique(irae_tx_all_IRAE_1_50$cohort_id)) ## 283 unique patient ID
+  
+  
+## Tagging individual episodes (to distinguish multi-system IRAE from different IRAEs on different dates)
+## Each unique cortico date will distinguish discrete IRAEs- so one date with an rx associated with multiple dx is just one IRAE
+  
+
+  ## All irAE tx
+    # All doses
+  irae_tx_all_IRAE_1 <- irae_tx_all_IRAE_1  %>%
+    arrange(cohort_id, ordering_date.y) %>%
+    group_by(cohort_id, ordering_date.y) %>%
+    mutate(new_irae_cortico_rx_date = ifelse(row_number() == 1, 1, 0)) %>%
+    group_by(cohort_id) %>%
+    mutate(cortico_rx_date_count = cumsum(new_irae_cortico_rx_date)) %>%
+    mutate(irae_count_max = max(cortico_rx_date_count))
+  
+  # Dose >50mg
+  irae_tx_all_IRAE_1_50 <- irae_tx_all_IRAE_1_50  %>%
+    arrange(cohort_id, ordering_date.y) %>%
+    group_by(cohort_id, ordering_date.y) %>%
+    mutate(new_irae_cortico_rx_date = ifelse(row_number() == 1, 1, 0)) %>%
+    group_by(cohort_id) %>%
+    mutate(cortico_rx_date_count = cumsum(new_irae_cortico_rx_date)) %>%
+    mutate(irae_count_max = max(cortico_rx_date_count))
+  
+  
+  ## pneumonitis and colitis only 
+  
+irae_tx_all_IRAE_1_50_pc <- filter(irae_tx_all_IRAE_1_50, pneumcolhep==1) 
+
+  ## Save to directory
+  save(irae_tx_all_IRAE_1, file = "irae_tx_all_IRAE_1.Rdata")
+  save(irae_tx_all_IRAE_1_50, file = "irae_tx_all_IRAE_1_50.Rdata")
+  save(irae_tx_all_IRAE_1_50_pc, file = "irae_tx_all_IRAE_1_50_pc.Rdata")
+  
+```
+
+\
+
+#### Test positives: Algorithm 4:  relax cortico rx requirement- the patient had taken a corticosteroid anytime prior to the "IRAE" dx (Based on clinician input)
+
+\
+
+```{r algorithm 4 cortico date (ANY rx, not index rx) prior to IRAE}
+## Filter on corticosteroid INDEX date anytime before "IRAE" dx
+  
+  ## Filter on cortico date anytime prior to dx date, through 40 days after
+
+  ## All irAE tx list 
+    # All doses
+    irae_tx_IRAE4 <- irae_tx_all_IRAE_merge[(irae_tx_all_IRAE_merge$ordering_date.y - irae_tx_all_IRAE_merge$dx_date)<41, ] ##  observations meet this criteria
+  length(unique(irae_tx_IRAE4$cohort_id)) ## 326
+  
+  # Dose >50mg
+  irae_tx_IRAE4_50 <- irae_tx_all_IRAE_merge_50[(irae_tx_all_IRAE_merge_50$ordering_date.y - irae_tx_all_IRAE_merge_50$dx_date)<41, ] ##  observations meet this criteria
+  length(unique(irae_tx_IRAE4_50$cohort_id)) ## 289
+  
+## Tagging individual episodes (to distinguish multi-system IRAE from different IRAEs on different dates)
+  
+## Each unique cortico date will distinguish discrete IRAEs- so one date with an rx associated with multiple dx is just one IRAE
+  
+
+  
+  # All doses
+  irae_tx_IRAE4 <- irae_tx_IRAE4  %>%
+    arrange(cohort_id, ordering_date.y) %>%
+    group_by(cohort_id, ordering_date.y) %>%
+    mutate(new_irae_cortico_rx_date = ifelse(row_number() == 1, 1, 0)) %>%
+    group_by(cohort_id) %>%
+    mutate(cortico_rx_date_count = cumsum(new_irae_cortico_rx_date)) %>%
+    mutate(irae_count_max = max(cortico_rx_date_count))
+  
+  # dose >50mg
+  irae_tx_IRAE4_50 <- irae_tx_IRAE4_50  %>%
+    arrange(cohort_id, ordering_date.y) %>%
+    group_by(cohort_id, ordering_date.y) %>%
+    mutate(new_irae_cortico_rx_date = ifelse(row_number() == 1, 1, 0)) %>%
+    group_by(cohort_id) %>%
+    mutate(cortico_rx_date_count = cumsum(new_irae_cortico_rx_date)) %>%
+    mutate(irae_count_max = max(cortico_rx_date_count))
+  
+
+  
+  
+    ## Filter on pneumcol ==1
+  irae_tx_IRAE4_50_pc <- filter(irae_tx_IRAE4_50, pneumcolhep==1)
+  
+    ## Save to directory
+  save(irae_tx_IRAE4, file = "irae_tx_IRAE4.Rdata")
+  save(irae_tx_IRAE4_50, file = "irae_tx_IRAE4_50.Rdata")
+  save(irae_tx_IRAE4_50_pc, file = "irae_tx_IRAE4_50_pc.Rdata")
+```
+
+\
+
+
+#### Test positives: Algorithm 2: Diagnosis-only algorithm, but using "irAE" patients defined by Brown V et al
+
+\
+
+```{r algorithm 2 test positives}
+# These are the dataframes with relevant patients
+ICI_IRAE_1_dedupe
+
+ICI_IRAE_1_dedupe_pc <- filter(ICI_IRAE_1_dedupe, pneumcolhep==1)
+
+  ## Save to directory
+  save(ICI_IRAE_1_dedupe, file = "ICI_IRAE_1_dedupe.Rdata")
+  save(ICI_IRAE_1_dedupe_pc, file = "ICI_IRAE_1_dedupe_pc.Rdata")
+```
+
+
+\
+
+#### Test positives: Algorithm 3. Treatment-only algorithm 
+
+\
+
+```{r algorithm 3 test positives}
+## These dataframes contain the relevant patients
+
+## All tx doses
+irae_tx_at_dedupe
+
+## Dose >50mg
+irae_tx_at_50_dedupe
+
+## Save to directory
+  save(irae_tx_at_dedupe, file = "irae_tx_at_dedupe.Rdata")
+  save(irae_tx_at_50_dedupe, file = "irae_tx_at_50_dedupe.Rdata")
+```
+
+\
+
+#### Test positives: Algorithm 5. Same as Algorithm 1, (w/ medication interruption)
+
+\
+
+```{r algorithm 5 ICI interruption}
+### Can reference the date of suspected IRAE against running list of ICI administrations
+load(file = "S:/JamieHeyward/Dissertation Aim 1 PMAP Analysis/R Scripts/For Manuscript/ICI_rx_t.Rdata")
+
+## Obtain the date of the most recent previous ICI administration, relative to the IRAE date
+
+## First, isolate only the records with a new IRAE dx for each patient
+
+new_irae_dates <- filter(irae_tx_all_IRAE_1, new_irae_cortico_rx_date ==1)
+
+new_irae_dates_50 <- filter(irae_tx_all_IRAE_1_50, new_irae_cortico_rx_date ==1)
+
+## Merge with ICI admin records to compare dates with ICI history- every "IRAE" dx compared to every ICI administration
+irae_ICI_admin_compare <- merge(ICI_rx_t, new_irae_dates, by= "cohort_id")
+
+## Derive gap in days between each "IRAE" event and each ICI administration- a number >0 will indicate an instance in which an ICI was administered on a date after a suspected "IRAE" (making it less certain this was a true IRAE)
+irae_ICI_admin_compare <- irae_ICI_admin_compare %>%
+  mutate(diffdates = ordering_date - dx_date) 
+
+## Filter on the rows with diffdate greater than 0  and less than 60 (rechallege can occur after day 60, or even before, depending on the severity of the AE and the cancer progression status of patient)
+ICI_after_irae_dx <- filter(irae_ICI_admin_compare, diffdates >0 & diffdates <61) 
+
+## Combine cohort_id and first_date1 to identify rows- reference point for filtering original IRAE list
+ICI_after_irae_dx$squish_id_dxdate <- str_c(ICI_after_irae_dx$cohort_id,':',ICI_after_irae_dx$dx_date)
+
+## In the original IRAE dataframe, remove records that match those flagged in this dataframe on pat_enc_csn_id
+
+## All doses
+irae_tx_all_IRAE_1$squish_id_dxdate <- str_c(irae_tx_all_IRAE_1$cohort_id,':',irae_tx_all_IRAE_1$dx_date)
+
+irae_tx_all_IRAE_1_rechalleng_excl <- filter(irae_tx_all_IRAE_1, !(squish_id_dxdate %in% ICI_after_irae_dx$squish_id_dxdate)) 
+
+## Save to directory 
+save(irae_tx_all_IRAE_1_rechalleng_excl, file = "irae_tx_all_IRAE_1_rechalleng_excl.Rdata")
+
+## Dose >50mg
+irae_tx_all_IRAE_1_50$squish_id_dxdate <- str_c(irae_tx_all_IRAE_1_50$cohort_id,':',irae_tx_all_IRAE_1_50$dx_date)
+
+irae_tx_all_IRAE_1_50_rechalleng_excl <- filter(irae_tx_all_IRAE_1_50, !(squish_id_dxdate %in% ICI_after_irae_dx$squish_id_dxdate)) 
+
+## Save to directory 
+save(irae_tx_all_IRAE_1_50_rechalleng_excl, file = "irae_tx_all_IRAE_1_50_rechalleng_excl.Rdata")
+
+
+## How many records removed? How many patients removed?
+
+dim(irae_tx_all_IRAE_1) ## 5716     
+dim(irae_tx_all_IRAE_1_rechalleng_excl) ## 5511  
+
+length(unique(irae_tx_all_IRAE_1$cohort_id)) ## 288 unique patients
+length(unique(irae_tx_all_IRAE_1_rechalleng_excl$cohort_id)) ## 275 unique patients - wow
+
+dim(irae_tx_all_IRAE_1_50) ## 4396      
+dim(irae_tx_all_IRAE_1_50_rechalleng_excl) ## 4226    
+
+length(unique(irae_tx_all_IRAE_1_50$cohort_id)) ## 258 unique patients
+length(unique(irae_tx_all_IRAE_1_50_rechalleng_excl$cohort_id)) ## 248 unique patients - wow
+
+
+## filter on pneumonitis/colitis
+irae_tx_all_IRAE_1_rechalleng_excl_pc <- filter(irae_tx_all_IRAE_1_rechalleng_excl, pneumcolhep==1)
+dim(irae_tx_all_IRAE_1_rechalleng_excl_pc)
+length(unique(irae_tx_all_IRAE_1_rechalleng_excl_pc$cohort_id)) ## 155 unique patients
+
+save(irae_tx_all_IRAE_1_rechalleng_excl_pc, file = "irae_tx_all_IRAE_1_rechalleng_excl_pc.Rdata")
+
+
+irae_tx_all_IRAE_1_50_rechalleng_excl_pc <- filter(irae_tx_all_IRAE_1_50_rechalleng_excl, pneumcolhep==1)
+dim(irae_tx_all_IRAE_1_50_rechalleng_excl_pc)
+length(unique(irae_tx_all_IRAE_1_50_rechalleng_excl_pc$cohort_id)) ## 140 unique patients
+
+save(irae_tx_all_IRAE_1_50_rechalleng_excl_pc, file = "irae_tx_all_IRAE_1_50_rechalleng_excl_pc.Rdata")
+```
+
+
+\
+#### NOTE: THIS IS INCOMPLETE BELOW
+
+#### Algorithm 6: Database-driven (disease types from RedCAP dropdown mapped to ICD-10)
+
+\
+
+```{r algorithm 6 dx icd list}
+## List of ICD-10 codes, using codes closely informed by ae_type dropdown from sub-registry
+
+## Can use meta dictionary to map ae_type and ae_symptoms to MedDRA codes and from MedDRA to ICD-10
+## List of ICD-10 codes was mapped from MedDRA using Metathesaurus/Bioportal
+
+icdcodes10_6 <- data.frame(code = c("L63.1","I49.9","M25.5","J98.09","R07.9","F03.90","L30.9","R19.7","K19.70","K57.92","R79.89","R53.83","R50.9","J11.1","J17.2","R04.2","E05.9","E87.1","G47.0","A31.9","R11.0","R11.10","J90","J18.9","M11.20","I26.99","E27.40","D69.6","B34.9","J12.9","M19.90","E03.9","E23.6","E10","R21","L29","L28.0","R21","L30.9","K52.9","K75.9","K20","K52.9","K50.9","M35.0","K85.9","G70.0","G61.0","G64","H46","J84.89","I51.4","N10","N05.8","D69.0","D69.3","D61.9","J32","L40.9","E06.9","K51.9","J84.114"))
+dim(icdcodes10_6)
+
+
+
+## Use apply() to return matches on all ICD10 codes of interest
+emr_dx10_6 <- apply(icdcodes10_6, 1, icd10search, simplify=TRUE)
+
+
+## Combine results of queries into a single table
+emr_dx_6t <- bind_rows(emr_dx10_6[[1]], emr_dx10_6[[2]], emr_dx10_6[[3]],
+                      emr_dx10_6[[4]], emr_dx10_6[[5]], emr_dx10_6[[6]], 
+                      emr_dx10_6[[7]], emr_dx10_6[[8]], emr_dx10_6[[9]],
+                      emr_dx10_6[[10]], emr_dx10_6[[11]], emr_dx10_6[[12]],
+                      emr_dx10_6[[13]], emr_dx10_6[[14]], emr_dx10_6[[15]], 
+                      emr_dx10_6[[16]], emr_dx10_6[[17]], emr_dx10_6[[18]],
+                      emr_dx10_6[[19]], emr_dx10_6[[20]], emr_dx10_6[[21]],
+                      emr_dx10_6[[22]], emr_dx10_6[[23]], emr_dx10_6[[24]], 
+                      emr_dx10_6[[25]], emr_dx10_6[[26]], emr_dx10_6[[27]],
+                      emr_dx10_6[[28]], emr_dx10_6[[29]], emr_dx10_6[[30]],
+                      emr_dx10_6[[31]], emr_dx10_6[[32]], emr_dx10_6[[33]], 
+                      emr_dx10_6[[34]], emr_dx10_6[[35]], emr_dx10_6[[36]],
+                      emr_dx10_6[[37]], emr_dx10_6[[38]], emr_dx10_6[[39]],
+                      emr_dx10_6[[40]], emr_dx10_6[[41]], emr_dx10_6[[42]], 
+                      emr_dx10_6[[43]], emr_dx10_6[[44]], emr_dx10_6[[45]],
+                      emr_dx10_6[[46]], emr_dx10_6[[47]], emr_dx10_6[[48]],
+                      emr_dx10_6[[49]], emr_dx10_6[[50]], emr_dx10_6[[51]], 
+                      emr_dx10_6[[52]], emr_dx10_6[[53]], emr_dx10_6[[54]],
+                      emr_dx10_6[[55]], emr_dx10_6[[56]], emr_dx10_6[[57]],
+                      emr_dx10_6[[58]], emr_dx10_6[[59]], emr_dx10_6[[60]], 
+                      emr_dx10_6[[61]], emr_dx10_6[[62]])
+
+
+emr_dx_6t$first_date1 <- date(emr_dx_6t$first_date)
+dim(emr_dx_6t) ## 124825     records for codes of interest in icd10list or icd9list field
+length(unique(emr_dx_6t$cohort_id)) ## 17645 unique patient_id with any of the dx of interest in icd10list  
+
+#emr_dx_6t_hosp <- filter(emr_dx_6t, dxsource=="HSP_ADMIT_DIAG")
+#dim(emr_dx_6t_hosp) ## 10515    records for codes of interest in icd10list field during hospital admission
+#length(unique(emr_dx_3t_hosp$cohort_id)) ## 5483 unique patient_id with any of the dx of interest in icd10list during hospital admission
+```
+
+\
+
+#### Algorithm 6: Exclude patients from this list who have a COVID_19 diagnosis (acute COVID will mimic IRAE in some cases, especially those implicating lungs/cardiovascular)
+
+\
+
+```{r algorithm 3 exclude covid patients}
+
+## Exclude patients on "IRAE" list who are also on COVID list
+emr_dx_6t_covidexc <- subset(emr_dx_6t, !(cohort_id %in% emr_covid_t$cohort_id))
+
+dim(emr_dx_6t)
+dim(emr_dx_6t_covidexc)
+
+length(unique(emr_dx_6t$cohort_id)) # 17645
+length(unique(emr_dx_6t_covidexc$cohort_id)) # 16342
+```
+\
+
+#### Algorithm 6: Merge list of "IRAE" dx with list of ICI patients (with dx after ICI index date).
+
+\
+
+```{r algorithm 6 merge with ICI exposure cohort}
+## Filter on patient being exposed to ICI
+emr_dx_ICI_6 <- emr_dx_6t_covidexc[emr_dx_6t_covidexc$cohort_id %in% ICI_rx_index$cohort_id, ] ## 17528 "IRAE" dx associated with patients on ICI exposure list
+length(unique(emr_dx_ICI_6$cohort_id)) ## 1652 unique patient ID associated with ICI rx "IRAE" dx
+
+
+## Filter on dx date after ICI index date
+  # Merge the ICI/dx list with the dx list on common cohort_id
+  dx_ICI_merge_6 <- merge(ICI_rx_index, emr_dx_ICI_6, by = "cohort_id")
+  
+  ## Filter on dx date > index date
+  ICI_IRAE_6 <- dx_ICI_merge_6[dx_ICI_merge_6$first_date1 >= dx_ICI_merge_6$ordering_date, ] ## 4850 observations meet this criteria... 
+  dim(ICI_IRAE_6) # 10528    
+  
+  ### Why are there duplicate entries for almost all patients? 
+  
+  ### Need to de-duplicate dates of service to eliminate records from the same date/diagnosis made in different settings.... 
+  
+  ### Can eliminate if record has the same patient ID, source, and date. 
+ICI_IRAE_6_dedupe <- ICI_IRAE_6[!duplicated(ICI_IRAE_6[c(1,9,10)]),] 
+dim(ICI_IRAE_6_dedupe) ## 9605    observations with duplicates removed
+```
+
+\
+
+### Algorithm 6: Mark first "IRAE" dx and create running count of encounters
+
+\
+
+
+```{r sequence}
+## Mark the first dx per patient and count appearances
+
+# Group the data by ID and create new columns indicating the first appearance of the value
+ICI_IRAE_6_dedupe <- ICI_IRAE_6_dedupe  %>%
+  arrange(cohort_id, first_date) %>%
+  group_by(cohort_id) %>%
+  mutate(first_appearance = ifelse(row_number() == 1, 1, as.integer(!duplicated(dx_name)))) %>%
+  mutate(RunningCount = cumsum(cohort_id == lag(cohort_id, default = first(cohort_id))))
+
+# Print the result
+# View(ICI_IRAE_6_dedupe) 
+
+## Create another table that just counts appearances per person
+appearances_table_6 <- count(ICI_IRAE_6_dedupe, cohort_id)
+
+## This person had a chart reivew ascertained IRAE... 
+# a <- filter(ICI_IRAE_6_dedupe, cohort_id == "TOB007sz809n51")
+```
+
+\
+
+### NOTE: HAVE NOT UPDATED CODE BEYOND HERE
+
+#### Algorithm 6: Flag specific ICI types (pnuemonitis, colitis, hepatitis)
+
+\
+
+```{r algorithm 3 pneumonitis colitis indicator}
+pneumcolcodes3 <- data.frame(codes = c("J18.9", "J84.89", "J84.114", "K52.9", "K50.9", "K51.9"))
+dim(pneumcolcodes3)
+
+
+## Write function to search each member of icd10 column in the icd10list field where dx was recorded
+pneumcolsearch3 <- function(pneumcol){
+  pneumcolmatch3 <- ICI_IRAE_3_dedupe[grep(pattern=pneumcol, x=ICI_IRAE_3_dedupe$icd10list), ]
+  return(as.data.frame(pneumcolmatch3))
+}
+
+ICI_IRAE_pneumcol3 <- apply(pneumcolcodes3, 1, pneumcolsearch3, simplify=TRUE)
+
+
+## Combine results of queries into a single table
+ICI_IRAE_pneumcol3_t <- bind_rows(ICI_IRAE_pneumcol3[[1]], ICI_IRAE_pneumcol3[[2]], 
+                                  ICI_IRAE_pneumcol3[[3]], ICI_IRAE_pneumcol3[[4]],
+                                  ICI_IRAE_pneumcol3[[5]])
+
+dim(ICI_IRAE_pneumcol3_t) ## 684 records
+
+ICI_IRAE_pneumcol3_t1 <- ICI_IRAE_pneumcol3_t %>%
+  select(cohort_id, first_date, icd10list, last_date) %>%
+  mutate(row_id = str_c(cohort_id,':',first_date,':',icd10list,':',last_date))
+
+## Add indicator variable in ICI_IRAE dataframe to add pneumcol indicator variable to that dataframe
+ICI_IRAE_3_dedupe <- ICI_IRAE_3_dedupe %>%
+  mutate(row_id = str_c(cohort_id,':',first_date,':',icd10list,':',last_date))
+
+ICI_IRAE_3_dedupe$pneumcol <- ifelse(ICI_IRAE_3_dedupe$row_id %in% ICI_IRAE_pneumcol3_t1$row_id, 1, 0)
+```
+
+\
+
+### Algorithm 6: Corticosteroid Rx within +/- 10 days of "IRAE" Dx date 
+
+\
+
+#### Algorithm 6 "Test" positives: Merge lists 1 and 2 to find those with a "IRAE" DX and associated corticosteroid Rx
+
+\
+
+```{r algorithm 3 merge IRAE dx and corticosteroid index list- method 1 dont use}
+## Filter corticosteroid list on membership in dx / ICI list
+
+# ## All cortico rx
+# cortico_IRAE_3 <- cortico_rx_at_dedupe.index[cortico_rx_at_dedupe.index$cohort_id %in% ICI_IRAE_3_dedupe$cohort_id, ]
+# length(unique(cortico_IRAE_3$cohort_id)) ## 302 unique patient ID with corticosteroid on ICI/"IRAE" list, this is the list of unique patients and their corticosteroid index date who also were on ICI and have a emr encounter ICD code for dx that might be IRAE
+# 
+# ## Cortico >50mg
+# cortico_IRAE_50_3 <- cortico_rx_at_50_dedupe.index[cortico_rx_at_50_dedupe.index$cohort_id %in% ICI_IRAE_3_dedupe$cohort_id, ]
+# length(unique(cortico_IRAE_50_3$cohort_id)) ## 243 unique patient ID with corticosteroid on ICI/"IRAE" list, this is the list of unique patients and their corticosteroid >50mg prednisone equivalent index date who also were on ICI and have a emr encounter ICD code for dx that might be IRAE
+
+
+
+## Broader list 
+
+## All cortico rx
+irae_tx_IRAE_3 <- irae_tx_at_dedupe.index[irae_tx_at_dedupe.index$cohort_id %in% ICI_IRAE_3_dedupe$cohort_id, ] 
+length(unique(irae_tx_IRAE_3$cohort_id)) ## 499 unique patient ID with corticosteroid on ICI/"IRAE" list, this is the list of unique patients and their corticosteroid index date who also were on ICI and have a emr encounter ICD code for dx that might be IRAE
+
+## Cortico >50mg
+irae_tx_IRAE_50_3 <- irae_tx_at_50_dedupe.index[irae_tx_at_50_dedupe.index$cohort_id %in% ICI_IRAE_3_dedupe$cohort_id, ] 
+length(unique(irae_tx_IRAE_50_3$cohort_id)) ## 448 unique patient ID with corticosteroid on ICI/"IRAE" list, this is the list of unique patients and their corticosteroid >50mg prednisone equivalent index date who also were on ICI and have a emr encounter ICD code for dx that might be IRAE
+
+
+
+
+## Merge the ICI/dx list with the cortico index rx list on common cohort_id
+
+# # All cortico rx
+#   cortico_IRAE_merge_3 <- inner_join(ICI_IRAE_3_dedupe, cortico_IRAE_3, by = "cohort_id") 
+# 
+# # Cortico >50mg
+#   cortico_IRAE_merge_50_3 <- inner_join(ICI_IRAE_3_dedupe, cortico_IRAE_50_3, by = "cohort_id") 
+#       ## This is a list of index corticosteroid Rx among people with ICI/"IRAE"- each row is a unique corticosteroid rx (?)
+#   
+  
+  ## Broader list 
+  # All cortico rx
+  irae_tx_IRAE_merge_3 <- inner_join(ICI_IRAE_3_dedupe, irae_tx_IRAE_3, by = "cohort_id") 
+
+# Cortico >50mg
+  irae_tx_IRAE_merge_50_3 <- inner_join(ICI_IRAE_3_dedupe, irae_tx_IRAE_50_3, by = "cohort_id") 
+      ## This is a list of index corticosteroid Rx among people with ICI/"IRAE"- each row is a unique corticosteroid rx (?)
+  
+  
+  ## Filter on index date less than 10-day buffer period before or after dx date
+  
+  # # All cortico rx
+  #   cortico_IRAE1_3 <- cortico_IRAE_merge_3[abs(cortico_IRAE_merge_3$ordering_date.y-cortico_IRAE_merge_3$first_date1)<11, ] ## 301 observations meet this criteria
+  # 
+  # length(unique(cortico_IRAE1_3$cohort_id)) ## 156
+  # 
+  # # Cortico >50mg
+  # 
+  # cortico_IRAE1_50_3 <- cortico_IRAE_merge_50_3[abs(cortico_IRAE_merge_50_3$ordering_date.y-cortico_IRAE_merge_50_3$first_date1)<11, ] ## 262 observations meet this criteria
+  # 
+  # length(unique(cortico_IRAE1_50_3$cohort_id)) ## 128
+  
+  ## Broader list 
+  
+    # All cortico rx
+    irae_tx_IRAE1_3 <- irae_tx_IRAE_merge_3[abs(irae_tx_IRAE_merge_3$ordering_date.y-irae_tx_IRAE_merge_3$first_date1)<11, ] ## 301 observations meet this criteria
+  
+  length(unique(irae_tx_IRAE1_3$cohort_id)) ## 294
+  
+  # Cortico >50mg
+  
+  irae_tx_IRAE1_50_3 <- irae_tx_IRAE_merge_50_3[abs(irae_tx_IRAE_merge_50_3$ordering_date.y-irae_tx_IRAE_merge_50_3$first_date1)<11, ] ## 262 observations meet this criteria
+  
+  length(unique(irae_tx_IRAE1_50_3$cohort_id)) ## 263
+```
+
+\
+
+```{r algorithm 3- cortico merge method 2 compare all irae tx with all irae}
+## Is there another way to do it? Reference entire list of cortico rx (not just first one) for each "IRAE" dx?
+
+## Create dataframe with just cohort_id and each date of corticosteroid rx
+
+#cortico_rx_at_50_dedupe.allrx <- subset(cortico_rx_at_50_dedupe, select =c("cohort_id","medication_name","sig_num","dose_unit","ordering_date","RunningCount"))
+
+# ## Filter corticosteroid list on membership in dx / ICI list
+# cortico_all_IRAEpat_3 <- cortico_rx_at_50_dedupe.allrx[cortico_rx_at_50_dedupe.allrx$cohort_id %in% ICI_IRAE_3_dedupe$cohort_id, ] 
+# 
+# length(unique(cortico_all_IRAEpat_3$cohort_id)) ## 273 unique patient ID with corticosteroid on ICI/"IRAE" list, this is the list of unique patients and their corticosteroid index date who also were on ICI and have a emr encounter ICD code for dx that might be IRAE
+
+## Use broader tx list
+irae_tx_all_IRAEpat_3 <- irae_tx_at_50_dedupe.allrx[irae_tx_at_50_dedupe.allrx$cohort_id %in% ICI_IRAE_3_dedupe$cohort_id, ] 
+
+length(unique(irae_tx_all_IRAEpat_3$cohort_id)) ## 448 unique patient ID with corticosteroid on ICI/"IRAE" list, this is the list of unique patients and their corticosteroid index date who also were on ICI and have a emr encounter ICD code for dx that might be IRAE
+
+
+
+## Filter on corticosteroid rx date within 10-day buffer period before or after "IRAE" dx
+
+# # Merge the ICI/dx list with the cortico ALL rx list on common cohort_id
+#  cortico_all_IRAE_merge_3 <- inner_join(ICI_IRAE_3_dedupe, cortico_all_IRAEpat_3, by = "cohort_id") 
+#       ## This is a list of every corticosteroid Rx among people with ICI/"IRAE"- each row is a unique corticosteroid rx * "IRAE" dx (?) so each "IRAE" dx is multiplied x the number of unique corticosteroid rx, so each dx date can be compared to all rx dates
+#   
+# ## Filter on rx date less than 10-day buffer period before or after dx date
+#   cortico_all_IRAE_3 <- cortico_all_IRAE_merge_3[abs(cortico_all_IRAE_merge_3$ordering_date.y-cortico_all_IRAE_merge_3$first_date1)<10, ] ## 
+#   
+# dim(cortico_all_IRAE_3) # 1448 individual records, meaning possibly multi-system IRAE or multiple successive IRAE in the same patient
+#   
+# length(unique(cortico_all_IRAE_3$cohort_id)) ## 221 unique patient ID
+
+
+## Broader list 
+
+# Merge the ICI/dx list with the cortico ALL rx list on common cohort_id
+ irae_tx_all_IRAE_merge_3 <- inner_join(ICI_IRAE_3_dedupe, irae_tx_all_IRAEpat_3, by = "cohort_id") 
+      ## This is a list of every corticosteroid Rx among people with ICI/"IRAE"- each row is a unique corticosteroid rx * "IRAE" dx (?) so each "IRAE" dx is multiplied x the number of unique corticosteroid rx, so each dx date can be compared to all rx dates
+  
+## Filter on rx date less than 10-day buffer period before or after dx date
+  irae_tx_all_IRAE_3 <- irae_tx_all_IRAE_merge_3[abs(irae_tx_all_IRAE_merge_3$ordering_date.y-irae_tx_all_IRAE_merge_3$first_date1)<11, ] ## 
+  
+dim(irae_tx_all_IRAE_3) # 2605 individual records, meaning possibly multi-system IRAE or multiple successive IRAE in the same patient
+  
+length(unique(irae_tx_all_IRAE_3$cohort_id)) ## 348 unique patient ID
+
+  
+## Tagging individual episodes (to distinguish multi-system IRAE from different IRAEs on different dates)
+## Each unique cortico date will distinguish discrete IRAEs- so one date with an rx associated with multiple dx is just one IRAE
+# cortico_all_IRAE_3 <- cortico_all_IRAE_3  %>%
+#   arrange(cohort_id, ordering_date.y) %>%
+#   group_by(cohort_id, ordering_date.y) %>%
+#   mutate(new_irae_cortico_rx_date = ifelse(row_number() == 1, 1, 0)) %>%
+#   group_by(cohort_id) %>%
+#   mutate(cortico_rx_date_count = cumsum(new_irae_cortico_rx_date)) %>%
+#   mutate(irae_count_max = max(cortico_rx_date_count))
+
+
+## Broader list 
+
+irae_tx_all_IRAE_3 <- irae_tx_all_IRAE_3  %>%
+  arrange(cohort_id, ordering_date.y) %>%
+  group_by(cohort_id, ordering_date.y) %>%
+  mutate(new_irae_cortico_rx_date = ifelse(row_number() == 1, 1, 0)) %>%
+  group_by(cohort_id) %>%
+  mutate(cortico_rx_date_count = cumsum(new_irae_cortico_rx_date)) %>%
+  mutate(irae_count_max = max(cortico_rx_date_count))
+```
+
+\
