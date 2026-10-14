@@ -1,0 +1,387 @@
+---
+title: "Utilization Sensitivity Analysis"
+author: "Sophia Ko"
+date: "2026-04-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load packages:
+```{r}
+library(haven)
+library(tidyverse)
+library(dplyr)
+library(lubridate)
+```
+
+Load the claim level file for the original 2177 cohort (mult_ici) & filter to final patient population. The filtered file will have all the ICI claims and summary indicators from the original SAS cleaning script (04_seer_ICI_trt pattern_SK.sas). 
+```{r}
+getwd()
+data <- read_sas("../Data/processed/mult_ici.sas7bdat")
+length(unique(data$PATIENT_ID))
+pts <- readRDS("../Data/processed/skin_ici_outcomes3.rdS")
+pts <- pts %>%
+  filter(
+    STAGE_GROUP == "Distant"
+  )
+ptslist <- pts %>% pull(PATIENT_ID)
+dta <- data %>% filter(PATIENT_ID %in% ptslist)
+length(unique(dta$PATIENT_ID))
+```
+
+Explore variables in claim level file.
+```{r}
+str(dta)
+table(dta$total_within_ici_switch_total)
+table(dta$ICI_name)
+```
+
+Definition 1: Verify same first day claims for IPI + NIVO from SAS code
+```{r}
+df <- dta
+sas_equivalent_dual <- df %>%
+  filter(tx_date == first_ici_date) %>%
+  group_by(PATIENT_ID) %>%
+  summarise(
+    n_unique_ici = n_distinct(ICI_name),
+    has_nivo     = any(ICI_name == "NIVOLUMAB"),
+    has_ipi      = any(ICI_name == "IPILIMUMAB"),
+    all_drugs    = paste(sort(unique(ICI_name)), collapse = " + "),
+    .groups      = "drop"
+  ) %>%
+  mutate(sas_dual = n_unique_ici >= 2 & has_nivo & has_ipi)
+
+cat("=== SAS-equivalent dual count ===\n")
+sas_equivalent_dual %>% count(sas_dual)
+
+# Compare to your simpler R check (requires ONLY ipi + nivo, n_unique == 2)
+cat("\n=== Patients where SAS says dual but R check differs ===\n")
+sas_equivalent_dual %>%
+  filter(sas_dual == TRUE) %>%
+  filter(n_unique_ici != 2 | !has_nivo | !has_ipi) %>%
+  select(PATIENT_ID, n_unique_ici, has_nivo, has_ipi, all_drugs)
+```
+
+Explore the triple claim individual:
+```{r}
+# Cross-tab: what drug combos exist among SAS-dual patients
+cat("\n=== Drug combinations among SAS dual patients ===\n")
+sas_equivalent_dual %>%
+  filter(sas_dual == TRUE) %>%
+  count(all_drugs, sort = TRUE)
+# Identify the triple-claim patient
+triple_day0 <- sas_equivalent_dual %>%
+  filter(sas_dual == TRUE, n_unique_ici >= 3) %>%
+  pull(PATIENT_ID)
+
+cat("=== Triple-claim patient ID ===\n")
+triple_day0
+
+# Pull their full claims record
+cat("\n=== Full claims record ===\n")
+df %>%
+  filter(PATIENT_ID == triple_day0) %>%
+  select(PATIENT_ID, tx_date, first_ici_date, ICI_name, daysinceindex) %>%
+  arrange(tx_date)
+
+```
+Definition 2: Ever-exposed to same-day IPI + NIVO
+**NOTE: for this population subsets, the total will n≠585, because it is the total of IPI+NIVO and pembor is excluded.
+```{r}
+same_day_dual <- df %>%
+  filter(ICI_name %in% c("IPILIMUMAB", "NIVOLUMAB")) %>%
+  group_by(PATIENT_ID, tx_date) %>%
+  summarise(
+    has_ipi      = any(ICI_name == "IPILIMUMAB"),
+    has_nivo     = any(ICI_name == "NIVOLUMAB"),
+    is_dual_date = has_ipi & has_nivo,
+    .groups      = "drop"
+  )
+
+ever_dual <- same_day_dual %>%
+  group_by(PATIENT_ID) %>%
+  summarise(
+    sa1_ever_dual = as.integer(any(is_dual_date)),
+    .groups       = "drop"
+  )
+
+cat("=== SA1: Ever dual ===\n")
+table(ever_dual$sa1_ever_dual)
+```
+Definition 3: same day IPI + NIVO within first 4 cycles (~90 days)
+```{r}
+within_4cycles_dual <- df %>%
+  filter(ICI_name %in% c("IPILIMUMAB", "NIVOLUMAB")) %>%
+  mutate(days_from_index = as.numeric(tx_date - first_ici_date)) %>%
+  filter(days_from_index <= 90) %>%
+  group_by(PATIENT_ID, tx_date) %>%
+  summarise(
+    has_ipi      = any(ICI_name == "IPILIMUMAB"),
+    has_nivo     = any(ICI_name == "NIVOLUMAB"),
+    is_dual_date = has_ipi & has_nivo,
+    .groups      = "drop"
+  ) %>%
+  group_by(PATIENT_ID) %>%
+  summarise(
+    sa2_dual_within_4cycles = as.integer(any(is_dual_date)),
+    .groups = "drop"
+  )
+
+cat("=== SA2: Dual within 4 cycles (<=90 days) ===\n")
+table(within_4cycles_dual$sa2_dual_within_4cycles)
+```
+Definition 4: Allowing for not the same day, but within the same- first cycle (21 days)
+```{r}
+sa3_within_1cycle <- df %>%
+  filter(ICI_name %in% c("IPILIMUMAB", "NIVOLUMAB")) %>%
+  mutate(days_from_index = as.numeric(tx_date - first_ici_date)) %>%
+  filter(days_from_index <= 21) %>%
+  group_by(PATIENT_ID) %>%
+  summarise(
+    has_ipi_within_21d     = any(ICI_name == "IPILIMUMAB"),
+    has_nivo_within_21d    = any(ICI_name == "NIVOLUMAB"),
+    sa3_dual_within_1cycle = as.integer(has_ipi_within_21d & has_nivo_within_21d),
+    first_drug             = ICI_name[which.min(days_from_index)],
+    .groups                = "drop"
+  )
+
+cat("=== SA3: Dual within first cycle (<=21 days) ===\n")
+table(sa3_within_1cycle$sa3_dual_within_1cycle)
+```
+```{r}
+# ============================================================
+# Consistency check
+# ITT is the only definition where triple pt is forced single,
+# so SA1-SA3 counts may exceed ITT by 1 due to that patient
+# ============================================================
+cat("\n=== Superset check ===\n")
+cat("ITT dual:              106\n")
+cat("SA3 (within 1 cycle): ", sum(sa3_within_1cycle$sa3_dual_within_1cycle), "\n")
+cat("SA2 (within 4 cycles):", sum(within_4cycles_dual$sa2_dual_within_4cycles), "\n")
+cat("SA1 (ever):           ", sum(ever_dual$sa1_ever_dual), "\n")
+```
+Add sensitivity exposure definitions to the outcomes file:
+```{r}
+# First create itt_dual object (missing from your code)
+itt_dual <- sas_equivalent_dual %>%
+  mutate(itt_dual = case_when(
+    n_unique_ici >= 3     ~ 0L,
+    has_nivo & has_ipi    ~ 1L,
+    TRUE                  ~ 0L
+  )) %>%
+  select(PATIENT_ID, itt_dual)
+
+# Then merge all definitions
+pts_sa <- pts %>%
+  left_join(itt_dual,                                                          by = "PATIENT_ID") %>%
+  left_join(ever_dual,                                                         by = "PATIENT_ID") %>%
+  left_join(within_4cycles_dual,                                               by = "PATIENT_ID") %>%
+  left_join(sa3_within_1cycle %>% select(PATIENT_ID, sa3_dual_within_1cycle), by = "PATIENT_ID") %>%
+  mutate(across(c(itt_dual, sa1_ever_dual,
+                  sa2_dual_within_4cycles,
+                  sa3_dual_within_1cycle),
+                ~replace_na(as.integer(.), 0L)))
+
+# Quick check
+pts_sa %>%
+  summarise(
+    n          = n(),
+    itt        = sum(itt_dual),
+    sa3_1cycle = sum(sa3_dual_within_1cycle),
+    sa2_4cycle = sum(sa2_dual_within_4cycles),
+    sa1_ever   = sum(sa1_ever_dual)
+  )
+```
+Create a sensitivity analysis function that uses 07 Utilization2 code:
+```{r}
+run_sa_model <- function(data, exposure_var, label) {
+  
+  d <- data %>%
+    filter(STAGE_GROUP == "Distant") %>%
+    mutate(
+      dual = .data[[exposure_var]],
+      YEAR_CAT = case_when(
+        YEAR_OF_DIAGNOSIS %in% c("2013", "2014") ~ "2013–2014",
+        YEAR_OF_DIAGNOSIS == "2015"              ~ "2015",
+        YEAR_OF_DIAGNOSIS %in% c("2016", "2017", "2018", "2019") ~ "2016+"
+      ),
+      YEAR_CAT = factor(YEAR_CAT, levels = c("2015", "2013–2014", "2016+"))
+    )
+  
+  cat(sprintf("\n=== %s | N = %d (Dual = %d, Single = %d) ===\n",
+              label, nrow(d), sum(d$dual == 1), sum(d$dual == 0)))
+  
+  model <- glm(
+    dual ~ YEAR_CAT + age_75_binary + sex_recode + race_binary + 
+      radiation_binary + yost_tertile + pre_ici_surg + charlson_recode + 
+      autoimmune_recode + braf_recode + time_to_ici + firstline_ici_recode + 
+      histo_C + primary_site_group + mets_brain_claims + n_mets_cat,
+    data   = d,   # <-- fixed
+    family = binomial
+  )
+  
+  results <- tidy(model, conf.int = TRUE, exponentiate = TRUE) %>%
+    mutate(
+      definition  = label,
+      sig = case_when(
+        p.value < 0.001 ~ "***",
+        p.value < 0.01  ~ "**",
+        p.value < 0.05  ~ "*",
+        TRUE            ~ ""
+      ),
+      estimate_ci = sprintf("%.2f (%.2f–%.2f)%s", estimate, conf.low, conf.high, sig)
+    ) %>%
+    filter(term != "(Intercept)") %>%
+    select(definition, term, estimate_ci, p.value)
+  
+  return(results)
+}
+```
+
+
+Run the sensitivity model across all four exposure definitions
+```{r}
+sa_definitions <- list(
+  list(var = "itt_dual",                label = "ITT (same-day IPI+NIVO at index)"),
+  list(var = "sa3_dual_within_1cycle",  label = "SA1: Within first cycle (≤21 days)"),
+  list(var = "sa2_dual_within_4cycles", label = "SA2: Within first 4 cycles (≤90 days)"),
+  list(var = "sa1_ever_dual",           label = "SA3: Ever exposed")
+)
+library(broom)
+sa_results <- map(sa_definitions, function(x) {
+  run_sa_model(data = pts_sa, exposure_var = x$var, label = x$label)
+}) %>%
+  bind_rows()
+```
+
+Summary table, one row per covariate, one column per definition
+```{r}
+
+sa_wide <- sa_results %>%
+  select(definition, term, estimate_ci) %>%
+  pivot_wider(names_from = definition, values_from = estimate_ci)
+
+print(sa_wide, n = 100)
+sa_results %>% distinct(term) %>% arrange(term) %>% print(n = 100)
+```
+Clean data format & save to excel:
+```{r}
+
+library(openxlsx)
+term_labels <- c(
+  "YEAR_CAT2013–2014"                        = "Year of diagnosis: 2013–2014",
+  "YEAR_CAT2016+"                            = "Year of diagnosis: 2016+",
+  "age_75_binary75+"                         = "Age ≥75 years",
+  "sex_recodeFemale"                         = "Sex: Female",
+  "race_binaryNon-white/Unknown"             = "Race: Non-white/Unknown",
+  "radiation_binaryYes"                      = "Radiation: Yes",
+  "radiation_binaryMissing"                  = "Radiation: Missing",
+  "yost_tertileMiddle SES"                   = "Yost SES: Middle",
+  "yost_tertileHigh SES"                     = "Yost SES: High (least deprived)",
+  "pre_ici_surgYes"                          = "Prior surgical resection",
+  "charlson_recode1"                         = "Charlson: 1",
+  "charlson_recode2+"                        = "Charlson: 2+",
+  "autoimmune_recodeYes"                     = "Prior autoimmune condition",
+  "braf_recodeYes"                           = "BRAF: Mutant",
+  "time_to_ici3–12 months"                   = "Time to ICI: 3–12 months",
+  "time_to_ici>12 months"                    = "Time to ICI: >12 months",
+  "firstline_ici_recodeFirst SACT"           = "First-line ICI (first SACT)",
+  "histo_CNon-UV (Acral/Mucosal/Desmo)"      = "Histology: Non-UV (Acral/Mucosal/Desmoplastic)",
+  "histo_COther/Unknown"                     = "Histology: Other/Unknown",
+  "primary_site_groupExtremity"              = "Primary site: Extremity",
+  "primary_site_groupHead/Neck"              = "Primary site: Head/Neck",
+  "primary_site_groupNOS"                    = "Primary site: NOS",
+  "mets_brain_claimsYes"                     = "Brain metastases (claims-based)",
+  "n_mets_cat1"                              = "Number of met sites: 1",
+  "n_mets_cat2+"                             = "Number of met sites: 2+"
+)
+
+
+
+# =============================================================================
+# Format sa_wide with labels
+# =============================================================================
+
+sa_wide_labeled <- sa_wide %>%
+  mutate(
+    Variable = coalesce(term_labels[term], term)  # fall back to raw term if no label
+  ) %>%
+  relocate(Variable) %>%
+  select(-term)
+
+# =============================================================================
+# Export to Excel with formatting
+# =============================================================================
+
+wb <- createWorkbook()
+addWorksheet(wb, "Sensitivity Analyses")
+
+# Write data
+writeData(wb, sheet = 1, sa_wide_labeled, startRow = 2, startCol = 1, rowNames = FALSE)
+
+# Header style
+header_style <- createStyle(
+  fontName    = "Arial", fontSize = 10, fontColour = "white",
+  fgFill      = "#2C3E50", halign = "center", valign = "center",
+  textDecoration = "bold", wrapText = TRUE, border = "Bottom",
+  borderColour = "white"
+)
+
+# Body style
+body_style <- createStyle(
+  fontName = "Arial", fontSize = 10,
+  border   = "TopBottomLeftRight", borderColour = "#D3D3D3"
+)
+
+# Alternating row shading
+shade_style <- createStyle(
+  fontName = "Arial", fontSize = 10, fgFill = "#F5F5F5",
+  border   = "TopBottomLeftRight", borderColour = "#D3D3D3"
+)
+
+# Apply header style
+addStyle(wb, sheet = 1, header_style,
+         rows = 2, cols = 1:ncol(sa_wide_labeled), gridExpand = TRUE)
+
+# Apply body + alternating shading
+for (i in seq_len(nrow(sa_wide_labeled))) {
+  style <- if (i %% 2 == 0) shade_style else body_style
+  addStyle(wb, sheet = 1, style,
+           rows = i + 2, cols = 1:ncol(sa_wide_labeled), gridExpand = TRUE)
+}
+
+# Column widths
+setColWidths(wb, sheet = 1, cols = 1, widths = 35)
+setColWidths(wb, sheet = 1, cols = 2:ncol(sa_wide_labeled), widths = 28)
+
+# Title row
+writeData(wb, sheet = 1,
+          "Table: Adjusted Odds Ratios for Dual vs. Single ICI Receipt — Sensitivity Analyses",
+          startRow = 1, startCol = 1)
+addStyle(wb, sheet = 1,
+         createStyle(fontName = "Arial", fontSize = 11, textDecoration = "bold"),
+         rows = 1, cols = 1)
+
+# Footnote
+footnote_row <- nrow(sa_wide_labeled) + 4
+writeData(wb, sheet = 1,
+          "Reference categories: Year 2015; Age <75; Female; White; Charlson 0; BRAF wild-type; Superficial spreading histology; Extremity primary site. aOR = adjusted odds ratio; CI = confidence interval. *p<0.05, **p<0.01, ***p<0.001.",
+          startRow = footnote_row, startCol = 1)
+addStyle(wb, sheet = 1,
+         createStyle(fontName = "Arial", fontSize = 9, fontColour = "#666666"),
+         rows = footnote_row, cols = 1)
+
+#saveWorkbook(wb, "../Plots & Figures/Utilization_sensitivity_aOR_table.xlsx", overwrite = TRUE)
+cat("Saved: ../Plots & Figures/Utilization_sensitivity_aOR_table.xlsx\n")
+
+```
+Save final datasets:
+```{r}
+# Add to END of your sensitivity analysis script
+#saveRDS(df,     "../Data/processed/df_claims.rds")
+#saveRDS(pts_sa, "../Data/processed/pts_sa.rds")
+```
+

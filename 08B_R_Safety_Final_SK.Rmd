@@ -1,0 +1,1072 @@
+---
+title: "Distant Cohort for safety analysis with 12m dx to ICI restriction"
+author: "Sophia Ko"
+date: "2026-02-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(tidyverse)
+library(survival)
+library(survminer)
+library(haven)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(survey)
+library(cobalt)
+library(table1)
+library(tableone)
+library(cmprsk)        # Fine-Gray, CIF
+library(tidycmprsk)    # tidy wrappers for cmprsk
+library(ggsurvfit)     # CIF plotting
+
+
+#data <- readRDS("../Data/processed/skin_ici_outcomes3.rds")
+data2 <- read_rds("../Data/processed/skin_ici_outcomes_safety.RDS")
+#table(data2$CHEMOTHERAPY_RECODE_YES_NO_UNK)
+```
+
+
+Safety subgroup analysis: restricting sample to Distant, within 12 months index to ICI:
+- stage removed from models, n mets & mets sites variable were switched from claims-based to seer based 
+
+```{r, fig.width = 12}
+# data2 <- data %>%
+#   filter(
+#     STAGE_GROUP == "Distant"
+#   ) %>%
+#   mutate(
+#     index_regimen = droplevels(factor(index_regimen)),
+#     exposure_arm = factor(exposure_arm,
+#                           levels = c("Single (PD-1 or CTLA-4) ICI therapy",
+#                                      "Dual (PD-1 + CTLA-4) ICI therapy")),
+#     dual = ifelse(exposure_arm == "Dual (PD-1 + CTLA-4) ICI therapy", 1, 0)
+#   )
+# cat(sprintf("\nTable 2 analytic cohort: N = %d (Single = %d, Dual = %d)\n",
+#             nrow(data2),
+#             sum(data2$dual == 0),
+#             sum(data2$dual == 1)))
+# 
+# 
+# data2$time_to_ici <- droplevels(data2$time_to_ici)
+# table(data2$firstline_ici_recode)
+# data2$firstline_ici_recode <- relevel(data2$firstline_ici_recode, ref = "First SACT")
+# table(data2$firstline_ici_recode)
+# levels(data2$time_to_ici)
+
+#saveRDS(data2, "../Data/processed/skin_ici_outcomes_safety.RDS")
+```
+
+
+Unlike utilization paper, use the seer time of diagnosis mets variable. The utilization paper actually used a claims derived mets site, which could introduce immortal time bias in the safety paper since the claims based was defined over the course of follow-up? double check -- may have just put a time restriction.
+
+```{r}
+table(data2$SEERCOMBINEDMETSATDX_BRAIN_2010, useNA = "always")
+# =============================================================================
+# SEER-derived visceral metastasis variables for IPTW PS model
+# Variable interpretation: count of major visceral sites (brain/bone/liver/lung)
+# Note: All patients are stage IV by definition, so n=0 means primary mets
+# are at sites other than the four SEER-coded visceral organs
+# =============================================================================
+
+summary(data2$sex_recode)
+# Step 1: Create site-specific binary indicators with explicit NA handling
+# SEER codes: 0 = No, 1 = Yes, 9 = Unknown, NA = Not coded
+# Treat 9 and NA together as "Unknown" — do NOT silently assume "No"
+data2 <- data2 %>%
+  mutate(
+    seer_brain = case_when(
+      as.character(SEERCOMBINEDMETSATDX_BRAIN_2010) == "0" ~ "No",
+      as.character(SEERCOMBINEDMETSATDX_BRAIN_2010) == "1" ~ "Yes",
+      TRUE                                                  ~ "Unknown"
+    ),
+    seer_bone = case_when(
+      as.character(SEERCOMBINEDMETSAT_DX_BONE_2010) == "0" ~ "No",
+      as.character(SEERCOMBINEDMETSAT_DX_BONE_2010) == "1" ~ "Yes",
+      TRUE                                                   ~ "Unknown"
+    ),
+    seer_liver = case_when(
+      as.character(SEERCOMBINEDMETSATDX_LIVER_2010) == "0" ~ "No",
+      as.character(SEERCOMBINEDMETSATDX_LIVER_2010) == "1" ~ "Yes",
+      TRUE                                                  ~ "Unknown"
+    ),
+    seer_lung = case_when(
+      as.character(SEERCOMBINEDMETSAT_DX_LUNG_2010) == "0" ~ "No",
+      as.character(SEERCOMBINEDMETSAT_DX_LUNG_2010) == "1" ~ "Yes",
+      TRUE                                                  ~ "Unknown"
+    )
+  ) %>%
+  mutate(across(c(seer_brain, seer_bone, seer_liver, seer_lung),
+                ~ factor(., levels = c("No", "Yes", "Unknown"))))
+
+# QC: confirm site-level distributions
+cat("\n=== Site-specific SEER metastasis distributions ===\n")
+table(data2$seer_brain, useNA = "always")
+table(data2$seer_bone,  useNA = "always")
+table(data2$seer_liver, useNA = "always")
+table(data2$seer_lung,  useNA = "always")
+
+# Step 2: Count confirmed visceral metastatic sites
+# Range: 0-4. Count is "number of visceral organs with confirmed metastasis."
+# Sites coded Unknown contribute 0 to the count but are tracked separately.
+data2 <- data2 %>%
+  mutate(
+    seer_brain_bin = as.integer(seer_brain == "Yes"),
+    seer_bone_bin  = as.integer(seer_bone  == "Yes"),
+    seer_liver_bin = as.integer(seer_liver == "Yes"),
+    seer_lung_bin  = as.integer(seer_lung  == "Yes"),
+    
+    n_visceral_mets = seer_brain_bin + seer_bone_bin + seer_liver_bin + seer_lung_bin,
+    
+    n_unknown_sites = (seer_brain == "Unknown") +
+                      (seer_bone  == "Unknown") +
+                      (seer_liver == "Unknown") +
+                      (seer_lung  == "Unknown")
+  )
+
+cat("\n=== Confirmed visceral mets count by exposure ===\n")
+table(data2$n_visceral_mets, data2$exposure_arm, useNA = "always")
+
+cat("\n=== Distribution of sites with unknown status ===\n")
+table(data2$n_unknown_sites, useNA = "always")
+
+# Step 3: Define a categorical version interpreting n=0 as "non-visceral primary"
+# Note the explicit labeling — patients with 0 confirmed visceral sites do have
+# stage IV disease, but their metastatic site is not one of the four SEER-coded organs
+data2 <- data2 %>%
+  mutate(
+    visceral_mets_cat = case_when(
+      n_visceral_mets == 0 & n_unknown_sites == 0 ~ "Non-visceral Mets Site",
+      n_visceral_mets == 0 & n_unknown_sites > 0  ~ "Indeterminate",
+      n_visceral_mets == 1                        ~ "1 visceral site",
+      n_visceral_mets == 2                        ~ "2 visceral sites",
+      n_visceral_mets >= 3                        ~ "3+ visceral sites"
+    ),
+    visceral_mets_cat = factor(visceral_mets_cat,
+                               levels = c("Non-visceral Mets Site",
+                                          "1 visceral site",
+                                          "2 visceral sites",
+                                          "3+ visceral sites",
+                                          "Indeterminate"))
+  )
+
+cat("\n=== visceral_mets_cat by exposure ===\n")
+table(data2$visceral_mets_cat, data2$exposure_arm, useNA = "always")
+
+# Step 4: Prepare for PS model with missing-indicator approach
+# Continuous version for interactions, with explicit flag for indeterminate patients
+cohort_median_visceral <- median(data2$n_visceral_mets[
+  data2$visceral_mets_cat != "Indeterminate"
+], na.rm = TRUE)
+
+data2 <- data2 %>%
+  mutate(
+    # Continuous variable for PS interactions
+    n_visceral_mets_cont = ifelse(visceral_mets_cat == "Indeterminate",
+                                   cohort_median_visceral,
+                                   n_visceral_mets),
+    
+    # Missing-indicator flag for indeterminate status
+    indeterminate_mets = as.integer(visceral_mets_cat == "Indeterminate")
+  )
+
+cat("\n=== Imputation verification ===\n")
+cat("Cohort median visceral mets:", cohort_median_visceral, "\n")
+cat("n with indeterminate flag:", sum(data2$indeterminate_mets), "\n")
+table(data2$n_visceral_mets_cont, data2$indeterminate_mets, useNA = "always")
+
+
+```
+
+
+```{r}
+#table 1 ----------------------------------------------------------------------------------------------------------------
+table1(~ YEAR_OF_DIAGNOSIS + sex_recode + race_binary + radiation_binary + 
+         yost_tertile + pre_ici_surg + charlson_recode + autoimmune_recode + 
+         braf_recode + time_to_ici + firstline_ici_recode + histo_C + 
+         primary_site_group + seer_brain + visceral_mets_cat + index_regimen + 
+         days_dx_to_tx + AGERECODEWITHSINGLEAGES_AND_100 | exposure_arm, 
+       data = data2,
+       footnote = "Table 1. Baseline characteristics stratified by single-ICI or dual-ICI therapy receipt. Categorical variables presented as count (%) and continuous variables presented as Mean (SD) and Median [Min, Max]. Visceral metastatic burden derived from SEER site-specific indicators for brain, bone, liver, and lung; patients coded as 'Non-visceral primary' had stage IV disease with metastases at sites not captured by SEER organ-specific variables. Missing observations excluded in future complete case analysis are included in Table 1.")
+
+# export table1 as a csv to edit in excel
+t1_sub <- table1(~ YEAR_OF_DIAGNOSIS + sex_recode + race_binary + radiation_binary + 
+                   yost_tertile + pre_ici_surg + charlson_recode + autoimmune_recode + 
+                   braf_recode + time_to_ici + firstline_ici_recode + histo_C + 
+                   primary_site_group + seer_brain + visceral_mets_cat + index_regimen + 
+                   days_dx_to_tx + AGERECODEWITHSINGLEAGES_AND_100 | exposure_arm, 
+                 data = data2,
+                 footnote = "Table 1. Baseline characteristics stratified by single-ICI or dual-ICI therapy receipt. Categorical variables presented as count (%) and continuous variables presented as Mean (SD) and Median [Min, Max]. Visceral metastatic burden derived from SEER site-specific indicators for brain, bone, liver, and lung; patients coded as 'Non-visceral primary' had stage IV disease with metastases at sites not captured by SEER organ-specific variables. Missing observations excluded in future complete case analysis are included in Table 1.")
+
+t1_df <- as.data.frame(t1_sub)
+#writexl::write_xlsx(t1_df, "Table1_safety.xlsx")
+
+```
+
+```{r}
+data <- data2
+
+# =============================================================================
+# DEFINE VARIABLE TYPES
+# =============================================================================
+
+cat_vars <- c("sex_recode", "race_binary", "radiation_binary", "yost_tertile",
+  "pre_ici_surg", "charlson_recode", "autoimmune_recode", "braf_recode", 
+  "firstline_ici_recode", "histo_C", "primary_site_group",
+  "seer_brain", "visceral_mets_cat"
+)
+
+cont_vars <- c("days_dx_to_tx", "AGERECODEWITHSINGLEAGES_AND_100",
+               "n_visceral_mets_cont", "indeterminate_mets")
+
+# All covariates for PS model
+all_covariates <- c(cat_vars, cont_vars)
+# =============================================================================
+# DIAGNOSE: Find factors with <2 levels
+# =============================================================================
+
+cat("--- Checking factor levels ---\n")
+for (var in cat_vars) {
+  n_levels <- length(unique(na.omit(data[[var]])))
+  cat(var, ":", n_levels, "levels\n")
+  if (n_levels < 2) {
+    cat("  *** PROBLEM: Only 1 level! ***\n")
+    print(table(data[[var]], useNA = "ifany"))
+  }
+}
+
+```
+```{r}
+# =============================================================================
+# PREPARE DATA FOR PSM
+# =============================================================================
+
+data_ps <- data %>%
+  mutate(across(all_of(cat_vars), as.factor))
+
+data_ps <- data_ps %>%
+  mutate(across(all_of(cont_vars), as.numeric))
+
+data_ps <- data_ps %>%
+  mutate(
+    dual = case_when(
+      exposure_arm == "Dual (PD-1 + CTLA-4) ICI therapy" ~ 1,
+      exposure_arm == "Single (PD-1 or CTLA-4) ICI therapy" ~ 0,
+      TRUE ~ NA_real_
+    )
+  )
+
+cat("--- Treatment Distribution ---\n")
+table(data_ps$dual, data_ps$exposure_arm, useNA = "ifany")
+
+cat("\n--- Variable Types ---\n")
+data_ps %>%
+  select(all_of(all_covariates)) %>%
+  sapply(class) %>%
+  print()
+
+cat("\n--- Missingness ---\n")
+data_ps %>%
+  select(all_of(all_covariates), dual) %>%
+  summarise(across(everything(), ~sum(is.na(.)))) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "n_missing") %>%
+  filter(n_missing > 0) %>%
+  print()
+
+# =============================================================================
+# DROP MISSING BEFORE PSM
+# =============================================================================
+
+cat("N before dropping missing:", nrow(data_ps), "\n")
+
+data_ps_complete <- data_ps %>%
+  filter(
+    !is.na(charlson_recode),
+    !is.na(autoimmune_recode),
+    !is.na(primary_site_group)
+  )
+
+cat("N after dropping missing:", nrow(data_ps_complete), "\n")
+cat("Dropped:", nrow(data_ps) - nrow(data_ps_complete), "patients\n")
+
+data_ps_complete %>%
+  select(all_of(all_covariates), dual) %>%
+  summarise(across(everything(), ~sum(is.na(.)))) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "n_missing") %>%
+  filter(n_missing > 0)
+
+cat("\n--- Treatment Distribution (Complete Cases) ---\n")
+table(data_ps_complete$dual, useNA = "ifany")
+```
+```{r}
+# =============================================================================
+# PROPENSITY SCORE MODEL
+# =============================================================================
+
+# Note: visceral_mets_cat and n_visceral_mets_cont are collinear by design.
+# Use the categorical version OR the continuous + indeterminate flag, not both.
+# Here we use the continuous + indeterminate flag for the burden gradient,
+# and drop the categorical from the PS formula to avoid singularity.
+
+ps_covariates <- c(setdiff(all_covariates, "visceral_mets_cat"))
+
+ps_formula <- as.formula(paste(
+  "dual ~",
+  paste(ps_covariates, collapse = " + "),
+  "+ AGERECODEWITHSINGLEAGES_AND_100:n_visceral_mets_cont",
+  "+ sex_recode:n_visceral_mets_cont"
+))
+
+cat("\n--- PS Model Formula ---\n")
+print(ps_formula)
+
+ps_model <- glm(
+  ps_formula,
+  data = data_ps_complete,
+  family = binomial(link = "logit")
+)
+
+if (!ps_model$converged) {
+  warning("Model did not converge!")
+}
+
+data_ps_complete <- data_ps_complete %>%
+  mutate(ps = predict(ps_model, type = "response"))
+```
+
+
+```{r}
+# =============================================================================
+# CALCULATE IPTW WEIGHTS
+# =============================================================================
+
+pbar <- mean(data_ps_complete$dual, na.rm = TRUE)
+cat("\nPrevalence of Dual therapy:", round(pbar, 4), "\n")
+
+data_ps_complete <- data_ps_complete %>%
+  mutate(
+    uw = ifelse(dual == 1, 1 / ps, 1 / (1 - ps)),
+    sw = ifelse(dual == 1, pbar / ps, (1 - pbar) / (1 - ps))
+  )
+
+# Trim weights at 1st and 99th percentile
+sw_p1 <- quantile(data_ps_complete$sw, 0.01, na.rm = TRUE)
+sw_p99 <- quantile(data_ps_complete$sw, 0.99, na.rm = TRUE)
+
+cat("\nTrimming thresholds:\n")
+cat("  1st percentile:", round(sw_p1, 4), "\n")
+cat("  99th percentile:", round(sw_p99, 4), "\n")
+
+data_ps_complete <- data_ps_complete %>%
+  mutate(
+    sw_t = pmax(pmin(sw, sw_p99), sw_p1)
+  )
+
+cat("\n--- Weight Summary by Treatment Group ---\n")
+data_ps_complete %>%
+  group_by(dual) %>%
+  summarise(
+    n = n(),
+    mean_ps = round(mean(ps, na.rm = TRUE), 4),
+    mean_sw = round(mean(sw, na.rm = TRUE), 4),
+    mean_sw_t = round(mean(sw_t, na.rm = TRUE), 4),
+    min_sw_t = round(min(sw_t, na.rm = TRUE), 4),
+    max_sw_t = round(max(sw_t, na.rm = TRUE), 4)
+  ) %>%
+  print()
+
+cat("\nOverall mean of trimmed stabilized weights:", 
+    round(mean(data_ps_complete$sw_t, na.rm = TRUE), 4), "(should be ~1)\n")
+```
+
+```{r}
+# =============================================================================
+# LOVE PLOT - COVARIATE BALANCE
+# =============================================================================
+
+data_ps_complete$weights_iptw <- data_ps_complete$sw_t
+
+love.plot(
+  ps_model,
+  binary = "std",
+  continuous = "std",
+  s.d.denom = "pooled",
+  thresholds = c(m = 0.1),
+  var.order = "unadjusted",
+  abs = TRUE,
+  weights = data_ps_complete$sw_t,
+  colors = c("firebrick", "steelblue"),
+  shapes = c("circle", "triangle"),
+  title = "Covariate Balance Before and After IPTW"
+) +
+  theme_classic()
+
+# Tabulate n by treatment within problem covariates
+table(data$visceral_mets_cat, data$exposure_arm)
+table(data$seer_brain, data$exposure_arm)
+```
+
+```{r}
+
+
+# Unweighted
+tab_unw <- CreateTableOne(
+  vars = all_covariates,
+  strata = "dual",
+  data = data_ps_complete,
+  test = FALSE,
+  smd = TRUE
+)
+
+# Weighted
+design_wt <- svydesign(ids = ~1, weights = ~sw_t, data = data_ps_complete)
+tab_wt <- svyCreateTableOne(
+  vars = all_covariates,
+  strata = "dual",
+  data = design_wt,
+  test = FALSE,
+  smd = TRUE
+)
+
+
+# =============================================================================
+# IDENTIFY COVARIATES WITH POOR BALANCE AFTER WEIGHTING
+# =============================================================================
+
+# Extract SMDs from weighted table
+smd_matrix <- ExtractSmd(tab_wt)
+poor_balance <- smd_matrix[abs(smd_matrix[, 1]) >= 0.1, , drop = FALSE]
+
+if (nrow(poor_balance) > 0) {
+  cat("\n--- Covariates with |SMD| >= 0.1 after weighting ---\n")
+  print(poor_balance)
+} else {
+  cat("\n--- All covariates balanced (|SMD| < 0.1) after weighting ---\n")
+}
+
+# =============================================================================
+# SAVE
+# =============================================================================
+
+#saveRDS(data_ps_complete, "../Data/processed/skin_ici_psweighted.rds")
+
+
+```
+# =============================================================================
+# UNWEIGHTED KAPLAN-MEIER SURVIVAL CURVES
+# =============================================================================
+
+```{r}
+# Medicare death, single vs dual
+ggsurvplot(
+  fit = survfit(Surv(years_to_end_followup1_d, censor_flag_11) ~ exposure_arm, 
+                data = data_ps_complete), 
+  risk.table = TRUE,
+  data = data,
+  palette = "lancet",
+  linetype = 1,
+  censor.size = 0.8,
+  title = "Medicare survival by ICI Arm",
+  xlab = "Time since ICI index date (years)",
+  legend.title = "ICI Arm",
+  legend.labs = c("Single", "Dual"),
+  conf.int = TRUE,
+  pval = TRUE
+)
+
+# Medicare death, single vs dual, by brain mets
+ggsurvplot(
+  fit = survfit(Surv(years_to_end_followup1_d, censor_flag_11) ~ exposure_arm + seer_brain, 
+                data = data_ps_complete), 
+  risk.table = TRUE,
+  data = data,
+  palette = "lancet",
+  linetype = 1,
+  censor.size = 0.8,
+  title = "Medicare survival by ICI Arm and Brain Metastasis",
+  xlab = "Time since ICI index date (years)",
+  legend.title = "ICI Arm / Brain mets",
+  legend.labs = c("Single, No brain", "Single, Brain", "Single, Unknown",
+                  "Dual, No brain", "Dual, Brain", "Dual, Unknown"),
+  pval = TRUE
+)
+
+# Medicare death, by ICI regimen
+ggsurvplot(
+  fit = survfit(Surv(years_to_end_followup1_d, censor_flag_11) ~ index_regimen, 
+                data = data_ps_complete), 
+  risk.table = TRUE,
+  data = data,
+  palette = "lancet",
+  linetype = 1,
+  censor.size = 0.8,
+  title = "Medicare survival by ICI Regimen",
+  xlab = "Time since ICI index date (years)",
+  legend.title = "ICI Regimen",
+  legend.labs = c("Ipilimumab", "Ipilimumab + Nivolumab", "Nivolumab", "Pembrolizumab")
+)
+```
+
+
+# =============================================================================
+# WEIGHTED KAPLAN-MEIER SURVIVAL CURVES
+# =============================================================================
+```{r}
+# Weighted KM: Single vs Dual
+fit_wt_arm <- survfit(
+  Surv(years_to_end_followup1_d, censor_flag_11) ~ exposure_arm,
+  data = data_ps_complete,
+  weights = sw_t
+)
+
+ggsurvplot(
+  fit = fit_wt_arm,
+  data = data_ps_complete,
+  risk.table = TRUE,
+  palette = "lancet",
+  linetype = 1,
+  censor.size = 0.8,
+  title = "IPTW-Weighted Medicare Survival by ICI Arm",
+  xlab = "Time since ICI index date (years)",
+  ylab = "Survival Probability",
+  legend.title = "ICI Arm",
+  legend.labs = c("Single", "Dual"),
+  risk.table.title = "Weighted N at Risk",
+  conf.int = FALSE,
+  pval = FALSE,
+  ggtheme = theme_classic()
+)
+
+# Weighted KM: Single vs Dual, by brain mets
+fit_wt_mets <- survfit(
+  Surv(years_to_end_followup1_d, censor_flag_11) ~ exposure_arm + seer_brain,
+  data = data_ps_complete,
+  weights = sw_t
+)
+names(fit_wt_mets$strata)
+
+ggsurvplot(
+  fit = fit_wt_mets,
+  data = data_ps_complete,
+  risk.table = TRUE,
+  palette = "lancet",
+  linetype = 1,
+  censor.size = 0.8,
+  title = "IPTW-Weighted Medicare Survival by ICI Arm and Brain Metastasis",
+  xlab = "Time since ICI index date (years)",
+  ylab = "Survival Probability",
+  legend.title = "ICI Arm / Brain mets",
+  legend.labs = c("Single, No brain", "Single, Brain", "Single, Unknown",
+                  "Dual, No brain", "Dual, Brain", "Dual, Unknown"),
+  risk.table.title = "Weighted N at Risk",
+  conf.int = FALSE,
+  pval = FALSE,
+  ggtheme = theme_classic()
+)
+
+# Weighted KM: By index_regimen
+fit_wt_regimen <- survfit(
+  Surv(years_to_end_followup1_d, censor_flag_11) ~ index_regimen,
+  data = data_ps_complete,
+  weights = sw_t
+)
+
+ggsurvplot(
+  fit = fit_wt_regimen,
+  data = data_ps_complete,
+  risk.table = TRUE,
+  palette = "lancet",
+  linetype = 1,
+  censor.size = 0.8,
+  title = "IPTW-Weighted Medicare Survival by ICI Regimen",
+  xlab = "Time since ICI index date (years)",
+  ylab = "Survival Probability",
+  legend.title = "ICI Regimen",
+  legend.labs = c("Ipilimumab", "Ipilimumab + Nivolumab", "Nivolumab", "Pembrolizumab"),
+  risk.table.title = "Weighted N at Risk",
+  conf.int = TRUE,
+  pval = FALSE,
+  ggtheme = theme_classic()
+)
+```
+Safety KM
+
+```{r}
+# --- Unweighted KM: Single vs Dual (Severe irAE) ---
+fit_uwt_irae <- survfit(
+  Surv(years_to_end_followup2, censor_flag2 == 1) ~ exposure_arm,
+  data = data_ps_complete
+)
+ggsurvplot(
+  fit = fit_uwt_irae,
+  data = data_ps_complete,
+  risk.table = TRUE,
+  palette = "lancet",
+  linetype = 1,
+  censor.size = 0.8,
+  fun = "event",
+  title = "Cumulative Incidence of Severe irAE by ICI Arm",
+  xlab = "Time since ICI index date (years)",
+  ylab = "Cumulative Incidence of Severe irAE",
+  legend.title = "ICI Arm",
+  legend.labs = c("Single", "Dual"),
+  risk.table.title = "N at Risk",
+  conf.int = FALSE,
+  pval = TRUE,
+  ggtheme = theme_classic()
+)
+
+# --- Weighted KM: Single vs Dual (Severe irAE) ---
+fit_wt_irae <- survfit(
+  Surv(years_to_end_followup2, censor_flag2 == 1) ~ exposure_arm,
+  data = data_ps_complete,
+  weights = sw_t
+)
+ggsurvplot(
+  fit = fit_wt_irae,
+  data = data_ps_complete,
+  risk.table = TRUE,
+  palette = "lancet",
+  linetype = 1,
+  censor.size = 0.8,
+  fun = "event",
+  title = "IPTW-Weighted Cumulative Incidence of Severe irAE by ICI Arm",
+  xlab = "Time since ICI index date (years)",
+  ylab = "Cumulative Incidence of Severe irAE",
+  legend.title = "ICI Arm",
+  legend.labs = c("Single", "Dual"),
+  risk.table.title = "Weighted N at Risk",
+  conf.int = FALSE,
+  pval = FALSE,
+  ggtheme = theme_classic()
+)
+```
+Follow-up duration
+```{r}
+# --- Derived variables --------------------------------------------------------
+d_ps <- data_ps_complete %>%
+  mutate(
+    months_to_end_fu2 = years_to_end_followup2 * 12,
+    log_fu2 = log(years_to_end_followup2),
+    sw_t_norm = sw_t / mean(sw_t, na.rm = TRUE),
+    exposure_arm_f = factor(exposure_arm)
+  )
+
+mean(data_ps_complete$sw_t, na.rm = TRUE)      
+mean(data_ps_complete$sw_t_norm, na.rm = TRUE) 
+
+#===============================================================================
+# SECTION 1: DESCRIPTIVE STATISTICS
+#===============================================================================
+
+# Cross-tabulation: exposure_arm by event status
+table(d_ps$exposure_arm, d_ps$censor_flag2)
+prop.table(table(d_ps$exposure_arm, d_ps$censor_flag2), margin = 1) %>% round(4)
+
+# Follow-up duration by exposure arm
+d_ps %>%
+  group_by(exposure_arm) %>%
+  summarise(
+    n = n(),
+    mean_years  = mean(years_to_end_followup2, na.rm = TRUE),
+    wt_mean_yrs = weighted.mean(years_to_end_followup2, w = sw_t, na.rm = TRUE),
+    p25 = quantile(years_to_end_followup2, 0.25, na.rm = TRUE),
+    p50 = quantile(years_to_end_followup2, 0.50, na.rm = TRUE),
+    p75 = quantile(years_to_end_followup2, 0.75, na.rm = TRUE),
+    min = min(years_to_end_followup2, na.rm = TRUE),
+    max = max(years_to_end_followup2, na.rm = TRUE)
+  )
+
+# Check for negative follow-up
+d_ps %>% filter(years_to_end_followup2 < 0)
+```
+CIF models:
+```{r}
+#===============================================================================
+# SECTION 2: CUMULATIVE INCIDENCE FUNCTIONS (CIF)
+#===============================================================================
+
+# Unweighted CIF
+cif_fit <- cmprsk::cuminc(
+  ftime   = d_ps$years_to_end_followup2,
+  fstatus = d_ps$censor_flag2,
+  group   = d_ps$exposure_arm
+)
+
+# Print CIF estimates at specific time points
+timepoints_cif <- timepoints(cif_fit, times = c(0.5, 1, 1.5, 2, 3))
+print(timepoints_cif$est)
+
+# Gray's test for equality of CIFs
+print(cif_fit$Tests)
+
+cif_tidy <- cuminc(Surv(years_to_end_followup2, factor(censor_flag2)) ~ exposure_arm,
+                    data = d_ps)
+cif_tidy %>%
+  ggcuminc(outcome = "1") +
+  labs(
+    x = "Years",
+    y = "Cumulative Incidence of Severe irAE",
+    title = "Cumulative Incidence of Severe irAE by Exposure Arm"
+  ) +
+  add_risktable() +
+  theme_minimal()
+```
+Fine-Gray Models:
+```{r}
+#===============================================================================
+# SECTION 3: FINE-GRAY SUBDISTRIBUTION HAZARD MODELS
+#===============================================================================
+
+# Step 1: Create Fine-Gray expanded dataset
+# Updated to include new SEER mets variables for downstream stratified analyses
+fg_data <- finegray(
+  Surv(years_to_end_followup2, factor(censor_flag2)) ~ .,
+  data = d_ps %>% select(PATIENT_ID, years_to_end_followup2, censor_flag2,
+                         exposure_arm, sw_t_norm, age_75_binary, 
+                         visceral_mets_cat, seer_brain, pre_ici_surg),
+  etype = "1"
+)
+
+# Add combined weight for IPTW analysis (FG weights × IPTW weights)
+fg_data <- fg_data %>%
+  mutate(combined_wt = fgwt * sw_t_norm)
+
+# Step 2a: Unadjusted Fine-Gray model
+fg_unadj <- coxph(
+  Surv(fgstart, fgstop, fgstatus) ~ factor(exposure_arm),
+  data = fg_data,
+  weights = fgwt,
+  id = PATIENT_ID,
+  robust = TRUE
+)
+
+summary(fg_unadj)
+
+cat("\n--- Unadjusted Subdistribution HR ---\n")
+cat(sprintf("sHR = %.3f (95%% CI: %.3f - %.3f), p = %.4f\n",
+            exp(coef(fg_unadj)),
+            exp(confint(fg_unadj))[1],
+            exp(confint(fg_unadj))[2],
+            summary(fg_unadj)$coefficients[, "Pr(>|z|)"]))
+
+# Step 2b: IPTW-Weighted Fine-Gray model
+fg_iptw <- coxph(
+  Surv(fgstart, fgstop, fgstatus) ~ factor(exposure_arm),
+  data = fg_data,
+  weights = combined_wt,
+  id = PATIENT_ID,
+  robust = TRUE
+)
+summary(fg_iptw)
+
+cat("\n--- IPTW-Weighted Subdistribution HR ---\n")
+cat(sprintf("sHR = %.3f (95%% CI: %.3f - %.3f), p = %.4f\n",
+            exp(coef(fg_iptw)),
+            exp(confint(fg_iptw))[1],
+            exp(confint(fg_iptw))[2],
+            summary(fg_iptw)$coefficients[, "Pr(>|z|)"]))
+
+# Step 2c: IPTW-Weighted Fine-Gray 1 year restriction
+fg_data_1yr <- fg_data %>%
+  mutate(
+    fgstop_1yr = pmin(fgstop, 1),
+    fgstatus_1yr = ifelse(fgstop <= 1, fgstatus, 0)
+  )
+    
+fg_iptw_1y <- coxph(
+  Surv(fgstart, fgstop_1yr, fgstatus_1yr) ~ factor(exposure_arm),
+  data = fg_data_1yr,
+  weights = combined_wt,
+  id = PATIENT_ID,
+  robust = TRUE
+)
+
+summary(fg_iptw_1y)
+
+cat("\n--- IPTW-Weighted Subdistribution 1-yr HR ---\n")
+cat(sprintf("sHR = %.3f (95%% CI: %.3f - %.3f), p = %.4f\n",
+            exp(coef(fg_iptw_1y)),
+            exp(confint(fg_iptw_1y))[1],
+            exp(confint(fg_iptw_1y))[2],
+            summary(fg_iptw_1y)$coefficients[, "Pr(>|z|)"]))
+
+# 6-month restriction
+fg_data_6m <- fg_data %>%
+  mutate(
+    fgstop_6m  = pmin(fgstop, 0.5),
+    fgstatus_6m = ifelse(fgstop <= 0.5, fgstatus, 0)
+  ) %>%
+  filter(fgstop_6m > fgstart)
+
+nrow(fg_data) - nrow(fg_data_6m)
+
+fg_iptw_6m <- coxph(
+  Surv(fgstart, fgstop_6m, fgstatus_6m) ~ factor(exposure_arm),
+  data = fg_data_6m,
+  weights = combined_wt,
+  id = PATIENT_ID,
+  robust = TRUE
+)
+
+cat("\n--- IPTW-Weighted Subdistribution 6m HR ---\n")
+cat(sprintf("sHR = %.3f (95%% CI: %.3f - %.3f), p = %.4f\n",
+            exp(coef(fg_iptw_6m)),
+            exp(confint(fg_iptw_6m))[1],
+            exp(confint(fg_iptw_6m))[2],
+            summary(fg_iptw_6m)$coefficients[, "Pr(>|z|)"]))
+```
+Schoenfeld tests:
+```{r}
+# PH test for the Fine-Gray irAE models
+
+# Full - adj
+cox.zph(fg_iptw)
+plot(cox.zph(fg_iptw), main = "Schoenfeld Residuals - irAE (Fine-Gray)")
+
+# 1 year - adj
+cox.zph(fg_iptw_1y)
+
+# 6 months - adj
+cox.zph(fg_iptw_6m)
+plot(cox.zph(fg_iptw_6m), main = "Schoenfeld Residuals - irAE (Fine-Gray)")
+```
+Exploratory - stratified fine-gray
+```{r}
+# --- Stratified by age_75_binary ---
+for (age_grp in levels(fg_data$age_75_binary)) {
+  cat(sprintf("\n--- Age group: %s ---\n", age_grp))
+  fg_sub <- fg_data %>% filter(age_75_binary == age_grp)
+  
+  fg_iptw_age <- coxph(
+    Surv(fgstart, fgstop, fgstatus) ~ factor(exposure_arm),
+    data    = fg_sub,
+    weights = combined_wt,
+    id      = PATIENT_ID,
+    robust  = TRUE
+  )
+  
+  summary(fg_iptw_age)
+  cat(sprintf("sHR = %.3f (95%% CI: %.3f - %.3f), p = %.4f\n",
+              exp(coef(fg_iptw_age)),
+              exp(confint(fg_iptw_age))[1],
+              exp(confint(fg_iptw_age))[2],
+              summary(fg_iptw_age)$coefficients[, "Pr(>|z|)"]))
+}
+
+# Quick sanity check of categorical levels
+levels(data$visceral_mets_cat)
+
+# --- Stratified by pre_ici_surg ---
+for (grp in levels(fg_data$pre_ici_surg)) {
+  cat(sprintf("\n--- pre_ici_surg: %s ---\n", grp))
+  
+  fg_sub <- fg_data %>% filter(pre_ici_surg == grp)
+  
+  fg_iptw_sub <- coxph(
+    Surv(fgstart, fgstop, fgstatus) ~ factor(exposure_arm),
+    data    = fg_sub,
+    weights = combined_wt,
+    id      = PATIENT_ID,
+    robust  = TRUE
+  )
+  
+  cat(sprintf("sHR = %.3f (95%% CI: %.3f - %.3f), p = %.4f\n",
+              exp(coef(fg_iptw_sub)),
+              exp(confint(fg_iptw_sub))[1],
+              exp(confint(fg_iptw_sub))[2],
+              summary(fg_iptw_sub)$coefficients[, "Pr(>|z|)"]))
+}
+
+# --- Stratified by visceral_mets_cat ---
+for (grp in levels(fg_data$visceral_mets_cat)) {
+  cat(sprintf("\n--- visceral_mets_cat: %s ---\n", grp))
+  
+  fg_sub <- fg_data %>% filter(visceral_mets_cat == grp)
+  
+  # Skip if a stratum is too small to fit a model
+  if (nrow(fg_sub) < 10 || length(unique(fg_sub$exposure_arm)) < 2) {
+    cat("Skipping — insufficient sample size or single exposure group\n")
+    next
+  }
+  
+  fg_iptw_sub <- coxph(
+    Surv(fgstart, fgstop, fgstatus) ~ factor(exposure_arm),
+    data    = fg_sub,
+    weights = combined_wt,
+    id      = PATIENT_ID,
+    robust  = TRUE
+  )
+  
+  cat(sprintf("sHR = %.3f (95%% CI: %.3f - %.3f), p = %.4f\n",
+              exp(coef(fg_iptw_sub)),
+              exp(confint(fg_iptw_sub))[1],
+              exp(confint(fg_iptw_sub))[2],
+              summary(fg_iptw_sub)$coefficients[, "Pr(>|z|)"]))
+}
+
+# --- Stratified by seer_brain (new) ---
+for (grp in levels(fg_data$seer_brain)) {
+  cat(sprintf("\n--- seer_brain: %s ---\n", grp))
+  
+  fg_sub <- fg_data %>% filter(seer_brain == grp)
+  
+  if (nrow(fg_sub) < 10 || length(unique(fg_sub$exposure_arm)) < 2) {
+    cat("Skipping — insufficient sample size or single exposure group\n")
+    next
+  }
+  
+  fg_iptw_sub <- coxph(
+    Surv(fgstart, fgstop, fgstatus) ~ factor(exposure_arm),
+    data    = fg_sub,
+    weights = combined_wt,
+    id      = PATIENT_ID,
+    robust  = TRUE
+  )
+  
+  cat(sprintf("sHR = %.3f (95%% CI: %.3f - %.3f), p = %.4f\n",
+              exp(coef(fg_iptw_sub)),
+              exp(confint(fg_iptw_sub))[1],
+              exp(confint(fg_iptw_sub))[2],
+              summary(fg_iptw_sub)$coefficients[, "Pr(>|z|)"]))
+}
+```
+# =============================================================================
+# PREVALENCE OF SEVERE irAE BY EXPOSURE ARM (entire follow-up)
+# =============================================================================
+
+```{r}
+# Unweighted
+data_ps_complete %>%
+  group_by(exposure_arm) %>%
+  summarise(
+    n = n(),
+    n_events = sum(censor_flag2 == 1, na.rm = TRUE),
+    prevalence_pct = round(100 * n_events / n, 1),
+    total_pyrs = round(sum(years_to_end_followup2, na.rm = TRUE), 1),
+    rate_per_100pyrs = round(100 * n_events / total_pyrs, 2)
+  )
+
+# IPTW-weighted
+data_ps_complete %>%
+  group_by(exposure_arm) %>%
+  summarise(
+    n = n(),
+    wt_n = round(sum(sw_t, na.rm = TRUE), 1),
+    wt_events = round(sum(sw_t * (censor_flag2 == 1), na.rm = TRUE), 1),
+    wt_prevalence_pct = round(100 * wt_events / wt_n, 1),
+    wt_pyrs = round(sum(sw_t * years_to_end_followup2, na.rm = TRUE), 1),
+    wt_rate_per_100pyrs = round(100 * wt_events / wt_pyrs, 2)
+  )
+```
+
+```{r, results figure}
+library(ggplot2); library(dplyr); library(tidyr); library(patchwork)
+
+navy <- "#1F3864"; ltblue <- "#9DC3E6"; hi <- "#C55A11"; grey <- "#7F7F7F"
+
+lv <- c("CheckMate 067", "RELATIVITY-047", "This study")
+
+# Trial values = grade 3-4 TRAE. This study = 180-d weighted CIF. REPLACE placeholders.
+ae <- tribble(
+  ~cohort,          ~regimen,       ~pct, ~ph,
+  "CheckMate 067",  "Single-agent", 16.3, FALSE,
+  "CheckMate 067",  "Dual-agent",   55.0, FALSE,
+  "RELATIVITY-047", "Single-agent",  9.7, FALSE,
+  "RELATIVITY-047", "Dual-agent",   18.9, FALSE,
+  "This study",     "Single-agent", 25.0, TRUE,
+  "This study",     "Dual-agent",   35.0, TRUE
+) |>
+  mutate(cohort  = factor(cohort, lv),
+         regimen = factor(regimen, c("Single-agent", "Dual-agent")),
+         lab     = ifelse(ph, "\u2014", sprintf("%.1f", pct)))
+
+fold <- ae |>
+  select(cohort, regimen, pct) |>
+  pivot_wider(names_from = regimen, values_from = pct) |>
+  mutate(lab = sprintf("%.1f\u00d7", `Dual-agent` / `Single-agent`),
+         y   = `Dual-agent` + 9)
+
+pA <- ggplot(ae, aes(cohort, pct, fill = regimen)) +
+  geom_col(aes(linetype = ph), position = position_dodge(0.72), width = 0.62,
+           colour = navy, linewidth = 0.4) +
+  geom_text(aes(label = lab), position = position_dodge(0.72),
+            vjust = -0.6, size = 3.1, colour = "grey20") +
+  geom_text(data = fold, aes(cohort, y, label = lab), inherit.aes = FALSE,
+            size = 3.5, fontface = 2, colour = navy) +
+  scale_fill_manual(values = c("Single-agent" = ltblue, "Dual-agent" = navy)) +
+  scale_linetype_manual(values = c(`FALSE` = "solid", `TRUE` = "22"), guide = "none") +
+  scale_y_continuous("Severe adverse events (%)", limits = c(0, 70),
+                     breaks = seq(0, 60, 20), expand = expansion(mult = c(0, 0))) +
+  coord_cartesian(clip = "off") +
+  theme_classic(base_size = 11) +
+  theme(legend.position = "top", legend.title = element_blank(),
+        legend.margin = margin(b = -4), legend.key.size = unit(9, "pt"),
+        axis.title.x = element_blank(), axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(), axis.line.x = element_blank(),
+        plot.margin = margin(6, 12, 2, 6))
+
+rows <- rev(c("Median age", "ECOG 0\u20131 required", "Brain metastases",
+              "Autoimmune history", "Age \u226575"))
+
+pop <- tribble(
+  ~cohort,          ~item,                  ~value,
+  "CheckMate 067",  "Median age",           "61",
+  "CheckMate 067",  "ECOG 0\u20131 required","Required",
+  "CheckMate 067",  "Brain metastases",     "Excluded",
+  "CheckMate 067",  "Autoimmune history",   "Excluded",
+  "CheckMate 067",  "Age \u226575",          "Rare",
+  "RELATIVITY-047", "Median age",           "63",
+  "RELATIVITY-047", "ECOG 0\u20131 required","Required",
+  "RELATIVITY-047", "Brain metastases",     "Excluded",
+  "RELATIVITY-047", "Autoimmune history",   "Excluded",
+  "RELATIVITY-047", "Age \u226575",          "Rare",
+  "This study",     "Median age",           "74",
+  "This study",     "ECOG 0\u20131 required","Unmeasured",
+  "This study",     "Brain metastases",     "Included",
+  "This study",     "Autoimmune history",   "Included",
+  "This study",     "Age \u226575",          "Majority"
+) |>
+  mutate(cohort = factor(cohort, lv),
+         item   = factor(item, rows),
+         col    = ifelse(cohort == "This study", hi, grey))
+
+pB <- ggplot(pop, aes(cohort, item)) +
+  geom_tile(aes(fill = cohort == "This study"), colour = "white", linewidth = 1.2) +
+  geom_text(aes(label = value, colour = col), size = 3.05) +
+  scale_fill_manual(values = c(`FALSE` = "#EDF2F9", `TRUE` = "#FBEFE6"), guide = "none") +
+  scale_colour_identity() +
+  scale_x_discrete(position = "bottom", expand = expansion(0)) +
+  scale_y_discrete(expand = expansion(0)) +
+  theme_minimal(base_size = 11) +
+  theme(panel.grid = element_blank(),
+        axis.title = element_blank(),
+        axis.text.x = element_text(face = 2, colour = navy, size = 9.5,
+                                   margin = margin(t = 3)),
+        axis.text.y = element_text(hjust = 1, size = 8.6, colour = "grey25"),
+        plot.margin = margin(2, 12, 6, 6))
+
+fig <- pA / pB +
+  plot_layout(heights = c(2.3, 1)) +
+  plot_annotation(
+    caption = paste("Trials: grade 3\u20134 treatment-related AEs.",
+                    "This study: 180-day weighted cumulative incidence of severe irAE,",
+                    "death as competing event."),
+    theme = theme(plot.caption = element_text(hjust = 0, size = 7.6,
+                                              colour = "grey35",
+                                              margin = margin(t = 6)),
+                  plot.margin = margin(4, 6, 4, 6)))
+
+ragg::agg_tiff("fig_benchmark.tiff", width = 7.2, height = 5.4,
+               units = "in", res = 600)
+print(fig)
+
+
+
+```
