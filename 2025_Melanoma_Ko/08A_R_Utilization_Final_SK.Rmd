@@ -1,0 +1,1350 @@
+---
+title: 'Aim 1: Covariate Cleaning, Risk Factor Analysis, Outcome is dual vs single ICI'
+author: "Sophia Ko"
+date: "2025-12-20"
+output:
+  word_document: default
+  latex_engine: xelatex
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE)
+```
+
+``` {r}
+#install.packages("rlang")
+library(tidyverse)
+library(scales)
+data <- haven::read_sas("../Data/processed/skin_ici_patient_covar_plus_surg.sas7bdat")
+
+```
+
+```{r}
+#Re-classify the one individual who was mislabelled nivo+ipi, when they were ipi+pembro:
+# Reclassify ipi+pembro patient as mono ICI ipilimumab
+data <- data %>%
+  mutate(
+    index_regimen = ifelse(PATIENT_ID == "lnK2022V0126847", "IPILIMUMAB", index_regimen),
+    exposure_arm  = ifelse(PATIENT_ID == "lnK2022V0126847", 1, exposure_arm),
+    cohort        = ifelse(PATIENT_ID == "lnK2022V0126847", "1. Mono ICI, first-line", cohort)
+  )
+
+# Verify
+data %>% filter(PATIENT_ID == "lnK2022V0126847") %>%
+  select(PATIENT_ID, index_regimen, exposure_arm, cohort)
+```
+
+#Step 1: Covariate Cleaning:
+1. Stage at Dx: categorical
+  a. Drop the stage variable created earlier.
+  b. Reconstruct  two stage variables, one specific with AJCC as priority, the other using seer summary stage.
+  b. Final variable names: STAGE_GROUP (SEER), STAGE_LABEL (AJCC)
+  d. STAGE_GROUP will be used for table 1 and 2, STAGE_LABEL will be used for PSM
+
+```{r}
+#exploring the best stage variable to use
+addmargins(table(data$STAGE_SOURCE, data$STAGE_GROUP, useNA ="ifany"))
+table(data$COMBINED_SUMMARY_STAGE_2004)
+table(data$DERIVEDAJCCSTAGEGROUP6THED20042, useNA ="ifany") #1624 missing
+addmargins(table(data$COMBINED_SUMMARY_STAGE_2004, useNA ="ifany"))
+#  1    2    7    9  Sum 
+# 719  864  585    9 2177 
+# localized (code 1), regional (codes 2-4) (2= regional by direct extension only, 3= regional lymph only, 4= regional lymo AND direct extension),  distant (code 7), benign (code 8), unknown (unstaged, unknown or unspecified) (code 9)
+# guidelines fro summary stage here: https://seer.cancer.gov/tools/ssm/Summary-Stage_v3.3.pdf
+# combined_summary_stage_2004 is the best code to use, It is: "Created from SEER Combined Summary Stage 2000 (2004-2017) & Derived  Summary Stage 2018 (2018+). #For more information including sites, years and registries for which it isn't calculated, see https://seer.cancer.gov/seerstat/variables/seer/lrd-stage/
+
+#drop old stage labels
+data <- data %>% select(-c(STAGE_SOURCE, STAGE_LABEL, STAGE_GROUP))
+```
+
+```{r}
+#create a new, more specific stage variable, stage_label, that preserves specificity----------
+library(dplyr)
+
+data <- data %>%
+  mutate(
+    # ---------------------------------
+    # Step 1: AJCC 7th (2013–2015)
+    # ---------------------------------
+    STAGE_LABEL = case_when(
+      YEAR_OF_DIAGNOSIS >= 2013 & YEAR_OF_DIAGNOSIS <= 2015 &
+        DERIVEDAJCCSTAGEGROUP7THED20102 %in% c("110","120") ~ "1A",
+      YEAR_OF_DIAGNOSIS >= 2013 & YEAR_OF_DIAGNOSIS <= 2015 &
+        DERIVEDAJCCSTAGEGROUP7THED20102 == "150" ~ "1B",
+      
+      YEAR_OF_DIAGNOSIS >= 2013 & YEAR_OF_DIAGNOSIS <= 2015 &
+        DERIVEDAJCCSTAGEGROUP7THED20102 %in% c("310","320") ~ "2A",
+      YEAR_OF_DIAGNOSIS >= 2013 & YEAR_OF_DIAGNOSIS <= 2015 &
+        DERIVEDAJCCSTAGEGROUP7THED20102 == "330" ~ "2B",
+      YEAR_OF_DIAGNOSIS >= 2013 & YEAR_OF_DIAGNOSIS <= 2015 &
+        DERIVEDAJCCSTAGEGROUP7THED20102 == "340" ~ "2C",
+      
+      YEAR_OF_DIAGNOSIS >= 2013 & YEAR_OF_DIAGNOSIS <= 2015 &
+        DERIVEDAJCCSTAGEGROUP7THED20102 %in% c("500","510") ~ "3",
+      YEAR_OF_DIAGNOSIS >= 2013 & YEAR_OF_DIAGNOSIS <= 2015 &
+        DERIVEDAJCCSTAGEGROUP7THED20102 == "520" ~ "3A",
+      YEAR_OF_DIAGNOSIS >= 2013 & YEAR_OF_DIAGNOSIS <= 2015 &
+        DERIVEDAJCCSTAGEGROUP7THED20102 == "530" ~ "3B",
+      YEAR_OF_DIAGNOSIS >= 2013 & YEAR_OF_DIAGNOSIS <= 2015 &
+        DERIVEDAJCCSTAGEGROUP7THED20102 == "540" ~ "3C",
+      
+      YEAR_OF_DIAGNOSIS >= 2013 & YEAR_OF_DIAGNOSIS <= 2015 &
+        DERIVEDAJCCSTAGEGROUP7THED20102 == "700" ~ "4",
+      
+      YEAR_OF_DIAGNOSIS >= 2013 & YEAR_OF_DIAGNOSIS <= 2015 &
+        DERIVEDAJCCSTAGEGROUP7THED20102 == "999" ~ "99",
+      
+      TRUE ~ NA_character_
+    ),
+    
+    # ---------------------------------
+    # Step 2: SEER Combined (2016–2017)
+    # already labeled → just pull it
+    # ---------------------------------
+    STAGE_LABEL = if_else(
+      is.na(STAGE_LABEL) &
+        YEAR_OF_DIAGNOSIS >= 2016 & YEAR_OF_DIAGNOSIS <= 2017 &
+        DERIVEDSEERCMBSTG_GRP_2016_2017 != "",
+      DERIVEDSEERCMBSTG_GRP_2016_2017,
+      STAGE_LABEL
+    ),
+    
+    # ---------------------------------
+    # Step 3: EOD 2018 (2018–2019)
+    # already labeled → just pull it
+    # ---------------------------------
+    STAGE_LABEL = if_else(
+      is.na(STAGE_LABEL) &
+        YEAR_OF_DIAGNOSIS >= 2018 & YEAR_OF_DIAGNOSIS <= 2019 &
+        DERIVEDEOD2018_STAGE_GROUP_2018 != "",
+      DERIVEDEOD2018_STAGE_GROUP_2018,
+      STAGE_LABEL
+    )
+  )
+
+addmargins(table(data$YEAR_OF_DIAGNOSIS, data$STAGE_LABEL, useNA = "ifany"))
+
+#so, create a new variable where it combines stage_label and with SEER summary stage, adding NOS to seer.
+    # so levels: stage I NOS, II-III NOS, IV
+    addmargins(table(data$COMBINED_SUMMARY_STAGE_2004))
+    
+    data %>%
+      filter(is.na(STAGE_LABEL) | STAGE_LABEL == "99") %>%
+      count(COMBINED_SUMMARY_STAGE_2004, sort = TRUE)
+#when combined == 7, stage_label is.na = 4:
+    
+    data <- data %>%
+      mutate(
+        STAGE_LABEL = if_else(
+          (is.na(STAGE_LABEL) | STAGE_LABEL == "99") &
+            COMBINED_SUMMARY_STAGE_2004 == 7,
+          "4",
+          STAGE_LABEL
+        )
+      )
+    addmargins(table(data$STAGE_LABEL, useNA = "ifany"))
+
+#now label stage_label as "1 NOS" when empty, but summary ==1
+    data <- data %>%
+      mutate(
+        STAGE_LABEL = if_else(
+          (is.na(STAGE_LABEL) | STAGE_LABEL == "99") &
+            COMBINED_SUMMARY_STAGE_2004 == 1,
+          "1 NOS",
+          STAGE_LABEL
+        )
+      )
+#now label stage_label as II-III NOS when stage_label empty, but summary = 2
+    
+    data <- data %>%
+      mutate(
+        STAGE_LABEL = if_else(
+          (is.na(STAGE_LABEL) | STAGE_LABEL == "99") &
+            COMBINED_SUMMARY_STAGE_2004 == 2,
+          "II–III NOS",
+          STAGE_LABEL
+        )
+      )
+    
+#finally, collapse stage_lablel 2 and 3 with stage_label II-III NOS:
+    data <- data %>%
+      mutate(
+        STAGE_LABEL = as.character(STAGE_LABEL),
+        STAGE_LABEL = if_else(
+          STAGE_LABEL %in% c("2", "3"),
+          "II–III NOS",
+          STAGE_LABEL
+        )
+      )
+    
+   
+addmargins(table(data$STAGE_LABEL, useNA = "ifany"))  
+#merging new stage label back into data
+
+data <- data %>%
+  mutate(
+    stage_recode = factor(
+      STAGE_LABEL,
+      levels = c(
+        "1 NOS",
+        "1A",
+        "1B",
+        "2A",
+        "2B",
+        "2C",
+        "3A",
+        "3B",
+        "3C",
+        "3D",
+        "4",
+        "II–III NOS"
+      )
+    )
+  )
+
+
+addmargins(table(data$stage_recode))
+
+#clean summary stage as well, since the granular stage will be used in PSM but can't be reported to table 1 given too small n
+data <- data %>%
+  mutate(
+    STAGE_GROUP = factor(
+      case_when(
+        COMBINED_SUMMARY_STAGE_2004 == "1" ~ "Localized",
+        COMBINED_SUMMARY_STAGE_2004 == "2" ~ "Regional",
+        COMBINED_SUMMARY_STAGE_2004 == "7" ~ "Distant",
+        TRUE ~ NA_character_
+      ),
+      levels = c("Localized", "Regional", "Distant")
+    )
+  )
+table(data$STAGE_GROUP, useNA = "ifany")
+
+```
+
+
+2. Charleson Comorbidity Index: categorical
+  a. levels: 0, 1, ≥2
+  b. variable name: Charlson
+    **need to relevel**
+    
+```{r}
+table(data$Charlson)
+str(data$Charlson)
+data <- data %>%
+  mutate(
+    charlson_recode = factor(
+      case_when(
+        Charlson == 0 ~ "0",
+        Charlson == 1 ~ "1",
+        Charlson >= 2 ~ "2+"
+      ),
+      levels = c("0", "1", "2+")
+    )
+  )
+table(data$charlson_recode)
+```
+    
+3. NCI Index score: continuous
+  a. variable name: NCI_index
+
+```{r}
+str(data$NCI_index)
+summary(data$NCI_index)
+
+# consider modelling as categorical??
+```
+4. Age at dx: categorical
+  a. levels: 66-75, 76-85, 86+
+  b. check that groups are ~ balanced
+  c. variable name: AGERECODEWITHSINGLEAGES_AND_100
+    
+```{r}
+table(data$AGERECODEWITHSINGLEAGES_AND_100)
+str(data$AGERECODEWITHSINGLEAGES_AND_100)
+data <- data %>%
+  mutate(
+    age_recode = factor(
+      case_when(
+        AGERECODEWITHSINGLEAGES_AND_100 <=75 ~ "66-75",
+        AGERECODEWITHSINGLEAGES_AND_100 >75 & AGERECODEWITHSINGLEAGES_AND_100 <=85 ~ "76-85",
+        AGERECODEWITHSINGLEAGES_AND_100 > 85 ~ "86+"
+      ),
+      levels = c("66-75", "76-85", "86+")
+    )
+  )
+table(data$age_recode)
+
+data <- data %>%
+  mutate(
+    age_75_binary = case_when(
+      AGERECODEWITHSINGLEAGES_AND_100 < 75 ~ "<75",
+      AGERECODEWITHSINGLEAGES_AND_100 >= 75 ~ "75+",
+      TRUE ~ NA_character_
+    ),
+    age_75_binary = factor(age_75_binary, levels = c("<75", "75+"))
+  )
+table(data$age_75_binary, useNA = "ifany")
+
+summary(data$days_dx_to_tx)
+
+```
+5. Gender: binary
+  a. "Male" or "Female"
+  b. variable name: SEX
+    **create factor with Female = 0 and Male = 1
+```{r}
+table(data$SEX)
+str(data$SEX)
+data <- data %>%
+  mutate(
+    sex_recode = factor(
+      case_when(
+        SEX == "Male" ~ "Male",
+        SEX == "Female" ~ "Female",
+      ),
+      levels = c("Male", "Female")
+    )
+  )
+table(data$sex_recode)
+```
+6. Race and ethnicity: categorical
+  a. Non-Hispanic White and other
+  b. Checked: counts too small to further stratify 
+  c. variable name: RACE_RECODE_WHITE_BLACK_OTHER
+```{r}
+table(data$RACE_RECODE_WHITE_BLACK_OTHER)
+str(data$RACE_RECODE_WHITE_BLACK_OTHER)
+data <- data %>%
+  mutate(
+    race_recode = factor(
+      case_when(
+        RACE_RECODE_WHITE_BLACK_OTHER == "1" ~ "White",
+         RACE_RECODE_WHITE_BLACK_OTHER == "2" ~ "Black",
+        RACE_RECODE_WHITE_BLACK_OTHER >2 & RACE_RECODE_WHITE_BLACK_OTHER <10 ~ "Other/Unknown",
+      ),
+      levels = c("White", "Black", "Other/Unknown")
+    )
+  )
+table(data$race_recode)
+
+data <- data %>%
+  mutate(
+    race_binary = case_when(
+      race_recode == "White" ~ "White",
+      TRUE ~ "Non-white/Unknown"
+    ),
+    race_binary = factor(race_binary, levels = c("White", "Non-white/Unknown"))
+  )
+table(data$race_binary, useNA = "ifany")
+
+```  
+7. Diagnosis Year: binary
+  a. 2 levels: pre dual ICI approval (2016) vs post
+  b. variable name: YEAR_OF_DIAGNOSIS
+    
+```{r}
+table(data$YEAR_OF_DIAGNOSIS)
+str(data$YEAR_OF_DIAGNOSIS)
+data <- data %>%
+  mutate(
+    dx_year_recode = factor(
+      case_when(YEAR_OF_DIAGNOSIS <2016 ~ "Pre-2016",
+                YEAR_OF_DIAGNOSIS >=2016 ~ "Post-2016"),
+      levels = c("Pre-2016", "Post-2016")
+    )
+  )
+table(data$dx_year_recode)
+table(data$index_regimen, data$dx_year_recode)
+
+```  
+8. Line of tx (out of chemo, TKI, ICI)
+  a. levels: first vs second or later line
+  b. variable name: firstline_ici
+  
+```{r}
+table(data$firstline_ici)
+str(data$firstline_ici)
+data <- data %>%
+  mutate(
+    firstline_ici_recode = factor(
+      firstline_ici,
+      levels = c("0", "1"),
+      labels = c("Second SACT", "First SACT")
+    )
+  )
+table(data$firstline_ici_recode)
+```
+9. Days from dx to ICI receipt
+  a. variable name: days_dx_to_tx
+  b. keep it continuous
+```{r}
+str(data$days_dx_to_tx)
+summary(data$days_dx_to_tx)
+
+#consider categorizing
+library(ggplot2)
+
+ggplot(data, aes(x = days_dx_to_tx)) +
+  geom_histogram(bins = 50) +
+  scale_x_continuous(
+    breaks = c(0, 90, 180, 365, 730, 1825),
+    labels = c("0", "3m", "6m", "1y", "2y", "5y")
+  ) +
+  labs(
+    x = "Days from diagnosis to ICI",
+    y = "Count"
+  ) +
+  theme_minimal()
+
+data <- data %>%
+  mutate(
+    dx_to_ici_recode = cut(
+      days_dx_to_tx,
+      breaks = c(0, 90, 180, 365, 730, Inf),
+      labels = c(
+        "Less than 3 months",
+        "3 to 6 months",
+        "6 to 12 months",
+        "1 to 2 years",
+        "Greater than 2 years"
+      ),
+      right = TRUE
+    )
+  )
+table(data$dx_to_ici_recode)
+#explore using tertiles:
+quantile(
+  data$days_dx_to_tx,
+  probs = c(0, 1/3, 2/3, 1),
+  na.rm = TRUE
+)
+data <- data %>%
+  mutate(
+    days_dx_to_tx_cat = cut(
+      days_dx_to_tx,
+      breaks = c(-Inf, 180, 730, Inf),
+      labels = c("<6 months", "6 months–2 years", "≥2 years"),
+      right = TRUE
+    )
+  )
+table(data$days_dx_to_tx_cat)
+
+data <- data %>%
+  mutate(
+    time_to_ici = case_when(
+      days_dx_to_tx <= 90 ~ "≤3 months",
+      days_dx_to_tx <= 365 ~ "3–12 months",
+      days_dx_to_tx > 365 ~ ">12 months",
+      TRUE ~ NA_character_
+    ),
+    time_to_ici = factor(time_to_ici, levels = c("≤3 months", "3–12 months", ">12 months"))
+  )
+
+table(data$time_to_ici, useNA = "ifany")
+
+
+```
+10. HX of Autoimmune disease: binary
+  a. variable name: autoimmune
+```{r}
+table(data$autoimmune)
+str(data$autoimmune)
+data <- data %>%
+  mutate(
+    autoimmune_recode = factor(
+      autoimmune,
+      levels = c("0", "1"),
+      labels = c("No", "Yes")
+    )
+  )
+table(data$autoimmune)
+``` 
+11. Prior surgery: binary
+  a. variable name: pre_ici_surg
+  b. Decided not to use the seer variables, surgery_binary, and the sequence variable, due to missingness and unclear about first systematic therapy it compared the sequence to
+```{r}
+
+table(data$pre_ici_surg)
+table(data$surgery_binary)
+table(data$RX_SUMM_SURG_PRIM_SITE_1998)
+
+data <- data %>%
+  mutate(
+    pre_ici_surg = case_when(
+      pre_ici_surg == "0" ~ "No",
+      pre_ici_surg == "1" ~ "Yes"
+    ),
+    pre_ici_surg = factor(
+      pre_ici_surg,
+      levels = c("No", "Yes")
+    )
+  )
+
+table(data$pre_ici_surg)
+
+``` 
+12. Likely BRAF+ status:
+  a. TKI tx prior
+  b. variable: TKI_exposure
+    **need to relevel to binary indicator with Pre-index ICI vs not**
+```{r}
+table(data$TKI_exposure)
+str(data$TKI_exposure)
+data <- data %>%
+  mutate(
+    braf_recode = factor(
+      case_when(TKI_exposure == "Never TKI" ~ "No",
+                TKI_exposure == "Pre-index TKI" | TKI_exposure == "Post-index on" ~ "Yes"),
+      levels = c("No", "Yes"),
+    )
+  )
+table(data$braf_recode)
+```     
+13.Histopathology:
+  a. Sun exposed, or other
+
+```{r}
+table(data$HISTOLOGIC_TYPE_ICD_O_3, useNA= "ifany")
+table(data$histo_A, data$HISTOLOGIC_TYPE_ICD_O_3, useNA = "ifany")
+table(data$histo_B, useNA = "ifany")
+str(data$histo_B)
+data <- data %>%
+  mutate(
+    histo_B = factor(
+      histo_B,
+      levels = c(
+        "Non-UV-associated",
+        "Probable UV-associated",
+        "UV-associated",
+        "Unknown"
+      )
+    )
+  )
+table(data$histo_B)
+addmargins(table(data$histo_B, data$exposure_arm, useNA = "ifany"))
+
+
+data <- data %>%
+  mutate(
+    histo_C = case_when(
+      HISTOLOGIC_TYPE_ICD_O_3 %in% c(8744, 8745, 8746) ~ "Non-UV (Acral/Mucosal/Desmo)",  # Acral, Desmoplastic, Mucosal
+      HISTOLOGIC_TYPE_ICD_O_3 %in% c(8721, 8742, 8743) ~ "UV-Associated",               # Nodular, Lentigo maligna, Superficial spreading
+      TRUE ~ "Other/Unknown"                                                     # NOS, probable UV, unknown, other codes
+    ),
+    histo_C = factor(
+      histo_C,
+      levels = c("UV-Associated", "Non-UV (Acral/Mucosal/Desmo)", "Other/Unknown")
+    )
+  )
+table(data$exposure_arm, data$histo_C, useNA = "ifany")
+```     
+
+14. Primary Dx site
+```{r}
+data <- data %>%
+  mutate(
+    
+    # --- Primary site ---
+    primary_site_group = case_when(
+      PRIMARY_SITE %in% c("C441", "C442", "C443", "C444") ~ "Head/Neck",
+      PRIMARY_SITE == "C445"                                ~ "Trunk",
+      PRIMARY_SITE %in% c("C446", "C447")                  ~ "Extremity",
+      PRIMARY_SITE == "C449"                                ~ "NOS",
+      TRUE                                                  ~ "Other"
+    ),
+    primary_site_group = factor(primary_site_group, 
+                                levels = c("Trunk", "Head/Neck", "Extremity", "NOS")))
+table(data$primary_site_group, data$exposure_arm)
+```
+
+
+
+15. Mets at Dx:
+1. Need to load in the data from sas outcomes file, which contains the mets at ICI index covariate info
+```{r}
+#seer based
+class(data$SEERCOMBINEDMETSATDX_BRAIN_2010)
+data <- data %>%
+  mutate(
+    seer_mets_brain = as.integer(as.character(SEERCOMBINEDMETSATDX_BRAIN_2010) == "1"),
+    seer_mets_bone  = as.integer(as.character(SEERCOMBINEDMETSAT_DX_BONE_2010) == "1"),
+    seer_mets_liver = as.integer(as.character(SEERCOMBINEDMETSATDX_LIVER_2010) == "1"),
+    seer_mets_lung  = as.integer(as.character(SEERCOMBINEDMETSAT_DX_LUNG_2010) == "1"),
+    
+    n_mets_seer = seer_mets_brain + seer_mets_bone + seer_mets_liver + seer_mets_lung,
+    
+    n_mets_seer_cat = case_when(
+      n_mets_seer == 1 ~ "1",
+      n_mets_seer >= 2 ~ "2+",
+      TRUE             ~ "None/Unknown"
+    ),
+    n_mets_seer_cat = factor(n_mets_seer_cat, levels = c("1", "2+", "None/Unknown"))
+  )
+
+# Debug: check what's actually in the raw variables
+table(data$SEERCOMBINEDMETSATDX_BRAIN_2010, useNA = "always")
+class(data$SEERCOMBINEDMETSATDX_BRAIN_2010)
+
+# Verify
+table(data$n_mets_seer, useNA = "always")
+table(data$n_mets_seer_cat, data$exposure_arm, useNA = "always")
+
+
+data$SEERCOMBINEDMETSATDX_BRAIN_2010 <- as.factor(data$SEERCOMBINEDMETSATDX_BRAIN_2010)
+data <- data %>%
+  mutate(
+    seer_brain_dx = case_when(
+      SEERCOMBINEDMETSATDX_BRAIN_2010 == 0 ~ "No",
+      SEERCOMBINEDMETSATDX_BRAIN_2010 == 1 ~ "Yes",
+      TRUE                                  ~ "Unconfirmed"
+    ),
+    seer_brain_dx = factor(seer_brain_dx, levels = c("No", "Yes", "Unconfirmed"))
+  )
+
+table(data$seer_brain_dx, data$exposure_arm, useNA = "always")
+# QC
+table(data$n_mets_seer_cat, data$exposure_arm, useNA = "always")
+table(data$seer_brain_dx, data$exposure_arm, useNA = "always")
+table(data$seer_mets_brain, data$exposure_arm, useNA = "always")
+table(data$seer_mets_bone, data$exposure_arm, useNA = "always")
+table(data$seer_mets_liver, data$exposure_arm, useNA = "always")
+table(data$seer_mets_lung, data$exposure_arm, useNA = "always")
+
+
+#claims-based
+metsdata <- haven::read_sas("../Data/processed/mets_claims_patient.sas7bdat")
+head(metsdata)
+# Check for duplicates
+metsdata %>% count(PATIENT_ID) %>% filter(n > 1)
+
+# Check row counts
+nrow(data)
+nrow(metsdata)
+data <- data %>%
+  left_join(
+    metsdata %>% select(PATIENT_ID, mets_brain_claims, mets_liver_claims,
+                           mets_lung_claims, mets_bone_claims,
+                           mets_other_claims, n_mets_organ, mets_lymph_claims),
+    by = "PATIENT_ID"
+  )
+
+
+table(data$mets_brain_claims, data$exposure_arm, useNA = "ifany")
+data <- data %>%
+  mutate(
+    n_mets_sites = mets_brain_claims + mets_liver_claims + mets_lung_claims + 
+                   mets_bone_claims + mets_other_claims,
+    n_mets_cat = case_when(
+      n_mets_sites == 0 ~ "0",
+      n_mets_sites == 1 ~ "1",
+      n_mets_sites >= 2 ~ "2+"
+    ),
+    n_mets_cat = factor(n_mets_cat, levels = c("0", "1", "2+"))
+  )
+
+table(data$n_mets_cat, data$exposure_arm, useNA = "always")
+table(data$mets_brain_claims)
+
+data <- data %>%
+  mutate(
+    mets_brain_claims = factor(mets_brain_claims, levels = c(0, 1), labels = c("No", "Yes"))
+  )
+
+table(data$mets_brain_claims, data$exposure_arm, useNA = "always")
+
+# QC: confirm no row inflation
+nrow(data)
+
+data <- data %>%
+  mutate(
+    mets_site_claims = case_when(
+      mets_brain_claims == 1 ~ "Brain",
+      mets_liver_claims == 1 ~ "Liver",
+      mets_lung_claims == 1  ~ "Lung",
+      mets_bone_claims == 1  ~ "Bone",
+      mets_other_claims == 1 ~ "Other",
+      TRUE                   ~ "None"
+    ),
+    mets_site_claims = factor(mets_site_claims, 
+                               levels = c("None", "Lung", "Bone", "Liver", "Brain", "Other"))
+  )
+
+table(data$mets_site_claims, data$exposure_arm, useNA = "always")
+
+
+```
+
+SES-RELATED VARIABLES FOR PSM ONLY:
+16. Median Household income:
+```{r}
+data <- data %>%
+  mutate(med_house_inc_num = as.numeric(MEDIANHOUSEHOLDINCOMEINFLATIONA))
+```
+
+17. Rural/Urban Continuum (RURAL_URBAN_CONTINUUM_CODE)
+```{r}
+data <- data %>%
+  mutate(
+    rurality = case_when(
+      RURAL_URBAN_CONTINUUM_CODE_2013 %in% c(1, 2, 3) ~ "Metropolitan",
+      RURAL_URBAN_CONTINUUM_CODE_2013 %in% c(4, 5, 6, 7) ~ "Urban",
+      RURAL_URBAN_CONTINUUM_CODE_2013 %in% c(8, 9) ~ "Rural"
+    ),
+    rurality = factor(rurality, levels = c("Metropolitan", "Urban", "Rural"))
+  )
+
+```
+
+18. Radiation
+```{r}
+
+data <- data %>%
+  mutate(
+    radiation_binary = case_when(
+      is.na(radiation_binary)    ~ "Missing",
+      radiation_binary == 0      ~ "None",
+      radiation_binary == 1      ~ "Yes",
+      TRUE                       ~ "Missing"
+    ),
+    radiation_binary = factor(radiation_binary,
+                               levels = c("None", "Yes", "Missing"))
+  )
+
+table(data$radiation_binary, data$exposure_arm, useNA = "always")
+
+
+
+```
+
+19. YOST Index Quintile (SES) (YOST_ACS_2013_2017_QUINTILE)
+```{r}
+
+data <- data %>%
+  mutate(
+    yost_tertile = factor(
+      ntile(YOST_ACS_2013_2017, 3),
+      levels = c(1, 2, 3),
+      labels = c("Low SES", "Middle SES", "High SES")
+    )
+  )
+
+table(data$yost_tertile, data$exposure_arm, useNA = "ifany")
+```
+
+20. Seer registry location (SEER_REGISTRY)
+```{r}
+table(data$SEER_REGISTRY)
+```
+21. Year of Dx post dual approval
+```{r}
+
+data <- data %>%
+  mutate(
+    dx_year_recode = case_when(
+      YEAR_OF_DIAGNOSIS %in% c(2016, 2017, 2018, 2019) ~ as.character(YEAR_OF_DIAGNOSIS),
+      TRUE ~ NA_character_
+    ),
+    dx_year_recode = factor(dx_year_recode, levels = c("2016", "2017", "2018", "2019"))
+  )
+
+table(data$dx_year_recode, data$exposure_arm, useNA = "always")
+```
+
+  
+#Clean variable & label names for Table 1
+
+```{r}
+#install.packages("table1")
+library(table1)
+label(data$exposure_arm) <- "Immune checkpoint inhibitor regimen"
+label(data$age_75_binary)   <- "Age at diagnosis"
+label(data$sex_recode)   <- "Sex"
+label(data$stage_recode)  <- "Stage at diagnosis"
+label(data$charlson_recode) <- "Charlson comorbidity index"
+label(data$race_binary) <- "Race and/or ethnicity"
+label(data$autoimmune_recode) <- "History of autoimmune disease"
+label(data$braf_recode) <- "BRAF or MEK inhibitor exposure"
+label(data$dx_to_ici_recode) <- "Days from diagnosis to ICI"
+label(data$dx_year_recode) <- "Year of diagnosis"
+label(data$firstline_ici_recode) <- "Systematic Anti-Cancer Treatment (SACT) Exposure"
+label(data$histo_C) <- "UV Etiology"
+label(data$pre_ici_surg) <- "Surgical Resection/Excision"
+label(data$time_to_ici) <- "Time from Dx to ICI Index"
+label(data$days_dx_to_tx_cat) <- "Time from Dx to ICI Receipt"
+label(data$STAGE_GROUP) <- "SEER Summary Stage"
+label(data$primary_site_group) <- "Primary Site"
+label(data$mets_brain_claims) <- "Brain Mets"
+label(data$n_mets_cat) <- "Number of Mets Sites"
+label(data$n_mets_seer_cat) <- "Mets Sites (Bone, Liver, Lung, or Brain Mets)"
+label(data$seer_brain_dx) <- "Brain Mets"
+table(data$exposure_arm)
+label(data$rurality) <- "Rurality Status"
+label(data$radiation_binary) <- "Radiation"
+label(data$yost_tertile) <- "SES Tertile"
+data$dx_year_recode <-as.factor(data$dx_year_recode)
+label(data$dx_year_recode) <- "Year of Diagnosis"
+data$YEAR_OF_DIAGNOSIS <-as.factor(data$YEAR_OF_DIAGNOSIS)
+label(data$YEAR_OF_DIAGNOSIS) <- "Year of Diagnosis"
+label(data$AGERECODEWITHSINGLEAGES_AND_100) <- "Age at Dx (continuous)"
+data <- data %>%
+  mutate(
+    exposure_arm = factor(
+      exposure_arm,
+      levels = c("1", "2"),
+      labels = c("Single (PD-1 or CTLA-4) ICI therapy", "Dual (PD-1 + CTLA-4) ICI therapy")
+    )
+  )
+table(data$exposure_arm)
+table(data$index_regimen)
+data <- data %>%
+  mutate(
+    index_regimen = factor(
+      index_regimen,
+      levels = c("IPILIMUMAB", "PEMBROLIZUMAB", "NIVOLUMAB", "IPILIMUMAB + NIVOLUMAB")
+    )
+  )
+table(data$index_regimen)
+```
+
+#Construct Table 1 with full cohort, by regimen. Includes all stages.
+
+
+```{r}
+
+table(data$STAGE_LABEL)
+addmargins(table(data$YEAR_OF_DIAGNOSIS, data$STAGE_GROUP, data$exposure_arm))
+addmargins(table(data$YEAR_OF_DIAGNOSIS, data$exposure_arm))
+
+#install.packages("flextable")
+library(flextable)
+table1(~ AGERECODEWITHSINGLEAGES_AND_100 + sex_recode + race_binary + rurality + YEAR_OF_DIAGNOSIS + STAGE_GROUP + radiation_binary + pre_ici_surg + charlson_recode + mets_brain_claims + n_mets_cat + autoimmune_recode + braf_recode + time_to_ici + firstline_ici_recode + histo_C + primary_site_group + yost_tertile | index_regimen, data = data,
+       footnote = "Table 1. Baseline characteristics stratified by single-ICI or dual-ICI therapy receipt. Categorical
+       variables presented as count (%) and continuous variables presented as Mean (SD) and Median [Min, Max]. Missing observations excluded in future complete case analysis are included in Table 1.")
+
+#export table1 as a csv to edit in excel
+t1 <- table1(~  AGERECODEWITHSINGLEAGES_AND_100 + sex_recode + race_binary + rurality + YEAR_OF_DIAGNOSIS + STAGE_GROUP + radiation_binary + pre_ici_surg + charlson_recode + mets_brain_claims + n_mets_cat + autoimmune_recode + braf_recode + time_to_ici + firstline_ici_recode + histo_C + primary_site_group + yost_tertile | index_regimen, data = data,
+       footnote = "Table 1. Baseline characteristics stratified by single-ICI or dual-ICI therapy receipt. Categorical
+       variables presented as count (%) and continuous variables presented as Mean (SD) and Median [Min, Max]. Missing observations excluded in future complete case analysis are included in Table 1.")
+
+t1_df <- as.data.frame(t1)
+#writexl::write_xlsx(t1_df, "Table1_2177_utilization.xlsx")
+
+
+```
+
+
+#first save updated comorb file, then Merge file with outcomes file, and save cleaned comorb + outcomes file
+```{r}
+getwd()
+#saveRDS(data, "../Data/processed/skin_ici_patient_comorb_clean.rds")
+#write_xpt(data, "../Data/processed/skin_ici_patient_comorb_clean.xpt")
+outcomes <- haven::read_sas("../Data/processed/skin_ici_outcomes2.sas7bdat")
+
+
+# Ensure patient_id types match
+data <- data %>% mutate(PATIENT_ID = as.character(PATIENT_ID))
+outcomes <- outcomes %>% mutate(PATIENT_ID = as.character(PATIENT_ID))
+
+# Identify outcome columns not already in data (excluding patient_id)
+new_cols <- setdiff(names(outcomes), names(data))
+new_cols <- setdiff(new_cols, "PATIENT_ID")
+
+# Keep only patient_id + new columns from outcomes
+outcomes_slim <- outcomes %>%
+  select(PATIENT_ID, all_of(new_cols)) %>%
+  distinct(PATIENT_ID, .keep_all = TRUE)   # protect against duplicates
+
+# Left join: preserves all rows in data; adds only new outcomes columns
+data_merged <- data %>%
+  left_join(outcomes_slim, by = "PATIENT_ID")
+
+#writexl::write_xlsx(data_merged, "../Data/processed/skin_ici_outcomes3.xlsx")
+#saveRDS(data_merged, "../Data/processed/skin_ici_outcomes3.rds") #VERY IMPORTANT. THIS FILE BECOMES INPUT FOR SAFETY ANALYSIS.
+
+```
+
+
+Full Analysis for Utilization Paper:
+```{r}
+
+# =============================================================================
+# TABLE 1: Full cohort, stratified by 4 index regimens
+# =============================================================================
+
+cat_vars_t1 <- c(
+  "age_75_binary", "sex_recode", "race_binary", "radiation_binary", "yost_tertile",
+  "YEAR_OF_DIAGNOSIS",
+  "STAGE_GROUP", "seer_brain_dx", "n_mets_cat", "histo_C", "primary_site_group",
+  "pre_ici_surg", "charlson_recode", "autoimmune_recode", "braf_recode",
+  "time_to_ici", "firstline_ici_recode"
+)
+
+cont_vars_t1 <- c("days_dx_to_tx")
+
+data <- data %>%
+  mutate(
+    index_regimen = factor(index_regimen, levels = c(
+      "IPILIMUMAB", "PEMBROLIZUMAB", "NIVOLUMAB", "IPILIMUMAB + NIVOLUMAB"
+    ))
+  )
+#install.packages("tableone")
+library(tableone)
+table1 <- CreateTableOne(
+  vars = c(cat_vars_t1, cont_vars_t1),
+  strata = "index_regimen",
+  data = data,
+  factorVars = cat_vars_t1,
+  addOverall = TRUE
+)
+
+# Store as data frame
+table1_df <- as.data.frame(print(table1, 
+                                  showAllLevels = TRUE, 
+                                  formatOptions = list(big.mark = ","),
+                                  quote = FALSE, 
+                                  noSpaces = TRUE, 
+                                  printToggle = FALSE))
+
+
+# =============================================================================
+# TABLE 1 POPULATION: Distant stage
+# =============================================================================
+table(data$index_regimen)
+
+data_t2 <- data %>%
+  filter(
+    STAGE_GROUP == "Distant"
+  ) %>%
+  mutate(
+    index_regimen = droplevels(factor(index_regimen)),
+    exposure_arm = factor(exposure_arm,
+                          levels = c("Single (PD-1 or CTLA-4) ICI therapy",
+                                     "Dual (PD-1 + CTLA-4) ICI therapy")),
+    dual = ifelse(exposure_arm == "Dual (PD-1 + CTLA-4) ICI therapy", 1, 0)
+  )
+cat(sprintf("\nTable 2 analytic cohort: N = %d (Single = %d, Dual = %d)\n",
+            nrow(data_t2),
+            sum(data_t2$dual == 0),
+            sum(data_t2$dual == 1)))
+
+
+# =============================================================================
+# TABLE 2: Descriptive — Dual vs Single (distant)
+# =============================================================================
+
+cat_vars_t2 <- c(
+  "YEAR_OF_DIAGNOSIS", "sex_recode", "race_binary", "radiation_binary", "yost_tertile",
+  "pre_ici_surg", "charlson_recode", "autoimmune_recode", "braf_recode",
+  "time_to_ici", "firstline_ici_recode", "histo_C", "primary_site_group",
+  "mets_brain_claims", "n_mets_cat", "index_regimen"
+)
+
+cont_vars_t2 <- c("days_dx_to_tx", "AGERECODEWITHSINGLEAGES_AND_100")
+
+table2 <- CreateTableOne(
+  vars = c(cat_vars_t2, cont_vars_t2),
+  strata = "exposure_arm",
+  data = data_t2,
+  factorVars = cat_vars_t2,
+  addOverall = TRUE
+)
+
+# Store as data frame
+table2_df <- as.data.frame(print(table2, 
+                                  smd = TRUE, 
+                                  showAllLevels = TRUE, 
+                                  quote = FALSE, 
+                                  noSpaces = TRUE, 
+                                  printToggle = FALSE))
+
+
+
+# =============================================================================
+# FIGURE 1: Time series — regimen trends over time (Distant cohort)
+# =============================================================================
+library(ggrepel)
+# Step 1: ts_dist with prop 
+ts_dist <- data_t2 %>%
+  mutate(YEAR_OF_DIAGNOSIS = as.numeric(as.character(YEAR_OF_DIAGNOSIS))) %>%
+  count(YEAR_OF_DIAGNOSIS, index_regimen) %>%
+  group_by(YEAR_OF_DIAGNOSIS) %>%
+  mutate(prop = n / sum(n)) %>%
+  ungroup()
+
+# Step 2: label_data from ts_dist (already has numeric YEAR_OF_DIAGNOSIS)
+regimen_labels <- c(
+  "IPILIMUMAB"             = "Ipilimumab",
+  "IPILIMUMAB + NIVOLUMAB" = "Ipi+Nivo",
+  "PEMBROLIZUMAB"          = "Pembrolizumab",
+  "NIVOLUMAB"              = "Nivolumab"
+)
+
+label_data <- ts_dist %>%
+  group_by(index_regimen) %>%
+  filter(YEAR_OF_DIAGNOSIS == max(YEAR_OF_DIAGNOSIS)) %>%
+  ungroup() %>%
+  mutate(regimen_label = regimen_labels[as.character(index_regimen)])
+
+# Step 3: verify before plotting
+names(ts_dist)  # must show prop
+
+# Step 4: plot
+ggplot(ts_dist, aes(x = YEAR_OF_DIAGNOSIS, y = prop,
+                    color = index_regimen, group = index_regimen)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3) +
+  geom_label_repel(
+    data = label_data,
+    aes(label = regimen_label),
+    nudge_x = 0.3,
+    direction = "y",
+    hjust = 0,
+    size = 3.2,
+    show.legend = FALSE
+  ) +
+  scale_x_continuous(expand = expansion(mult = c(0.05, 0.2))) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  scale_color_manual(
+    values = c(
+      "IPILIMUMAB"             = "#F39B7F",
+      "IPILIMUMAB + NIVOLUMAB" = "#E64B35",
+      "PEMBROLIZUMAB"          = "#4DBBD5",
+      "NIVOLUMAB"              = "#00A087"
+    )
+  ) +
+  labs(
+    x = "Year of Diagnosis",
+    y = "Proportion of Patients",
+    title = "Trends in ICI Regimen Selection Among Melanoma Patients",
+    subtitle = "Distant at Diagnosis, SEER-Medicare, 2013–2019"
+  ) +
+  theme_classic() +
+  theme(legend.position = "none")
+
+p_main <- ggplot(ts_dist, aes(x = YEAR_OF_DIAGNOSIS, y = prop,
+                    color = index_regimen, group = index_regimen)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3) +
+  geom_label_repel(
+    data = label_data,
+    aes(label = regimen_label),
+    nudge_x = 0.3,
+    direction = "y",
+    hjust = 0,
+    size = 3.2,
+    show.legend = FALSE
+  ) +
+  scale_x_continuous(expand = expansion(mult = c(0.05, 0.2))) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  scale_color_manual(
+    values = c(
+      "IPILIMUMAB"             = "#F39B7F",
+      "IPILIMUMAB + NIVOLUMAB" = "#E64B35",
+      "PEMBROLIZUMAB"          = "#4DBBD5",
+      "NIVOLUMAB"              = "#00A087"
+    )
+  ) +
+  labs(
+    x = "Year of Diagnosis",
+    y = "Proportion of Patients",
+    title = "Trends in ICI Regimen Selection Among Melanoma Patients",
+    subtitle = "Distant at Diagnosis, SEER-Medicare, 2013–2019"
+  ) +
+  theme_classic() +
+  theme(legend.position = "none")
+#ggsave("timeplot3.png", plot = p_main, width = 9, height = 6, dpi = 300)  # save p_main, not timeplot
+table(data_t2$index_regimen, data_t2$YEAR_OF_DIAGNOSIS) 
+``` 
+
+
+```{r}
+
+
+
+# =============================================================================
+# TABLE 3: Binary logistic regression — Dual vs Single
+# =============================================================================
+data_t2 <- data_t2 %>%
+  mutate(
+    YEAR_CAT = case_when(
+      YEAR_OF_DIAGNOSIS %in% c("2013", "2014") ~ "2013–2014",
+      YEAR_OF_DIAGNOSIS == "2015" ~ "2015",
+      YEAR_OF_DIAGNOSIS %in% c("2016", "2017", "2018", "2019") ~ "2016+"
+    ),
+    YEAR_CAT = factor(YEAR_CAT,
+                      levels = c("2015", "2013–2014", "2016+")) # sets 2015 as reference
+  )
+str(data_t2$YEAR_OF_DIAGNOSIS)
+model_t3 <- glm(
+  dual ~ YEAR_CAT + age_75_binary + sex_recode + race_binary + radiation_binary + yost_tertile +
+    pre_ici_surg + charlson_recode + autoimmune_recode +
+    braf_recode + time_to_ici + firstline_ici_recode + histo_C +
+    primary_site_group + mets_brain_claims + n_mets_cat,
+  data = data_t2,
+  family = binomial
+)
+#check model convergence:
+#install.packages("cars")
+library(car)
+vif(model_t3)
+alias(model_t3)
+library("broom")
+
+table(data_t2$index_regimen)
+# Store as data frame
+results_t3 <- tidy(model_t3, conf.int = TRUE, exponentiate = TRUE)
+
+table3_df <- results_t3 %>%
+  mutate(
+    sig = case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01  ~ "**",
+      p.value < 0.05  ~ "*",
+      TRUE            ~ ""
+    ),
+    estimate_ci = sprintf("%.2f (%.2f–%.2f)%s", estimate, conf.low, conf.high, sig)
+  ) %>%
+  filter(term != "(Intercept)") %>%
+  select(term, estimate_ci, p.value)
+cat_vars_mvr <- c("YEAR_CAT", "age_75_binary", "sex_recode", "race_binary", "radiation_binary", "yost_tertile",
+    "pre_ici_surg", "charlson_recode", "autoimmune_recode", 
+    "braf_recode", "time_to_ici", "firstline_ici_recode", "histo_C", 
+    "primary_site_group", "mets_brain_claims", "n_mets_cat")
+# Percent dual ICI users within each level of each variable
+map(cat_vars_mvr, function(var) {
+  data_t2 %>%
+    group_by(.data[[var]]) %>%
+    summarise(
+      n_total = n(),
+      n_dual  = sum(exposure_arm == "Dual (PD-1 + CTLA-4) ICI therapy", na.rm = TRUE),
+      pct_dual = round(n_dual / n_total * 100, 1)
+    ) %>%
+    mutate(variable = var) %>%
+    relocate(variable)
+}) %>%
+  bind_rows() %>%
+  print(n = 100)
+
+
+
+# =============================================================================
+# SUPPLEMENTAL: Multinomial model (full cohort, all regimens)
+# =============================================================================
+
+data_supp <- data %>%
+  filter(!YEAR_OF_DIAGNOSIS %in% c(2013, 2014, 2015)) %>%
+  mutate(
+    index_regimen = relevel(droplevels(factor(index_regimen)),
+                            ref = "IPILIMUMAB + NIVOLUMAB"),
+    dx_year_recode = factor(YEAR_OF_DIAGNOSIS)
+  )
+
+library(nnet)
+model_supp <- multinom(
+  index_regimen ~ YEAR_OF_DIAGNOSIS + age_75_binary + sex_recode + race_binary + radiation_binary + yost_tertile +
+    STAGE_GROUP + pre_ici_surg + charlson_recode +
+    autoimmune_recode + braf_recode + time_to_ici + firstline_ici_recode +
+    histo_C + primary_site_group + mets_brain_claims + n_mets_cat + index_regimen,
+  data = data_supp
+)
+
+results_supp <- tidy(model_supp, conf.int = TRUE, exponentiate = TRUE)
+
+stable1_df <- results_supp %>%
+  mutate(
+    sig = case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01  ~ "**",
+      p.value < 0.05  ~ "*",
+      TRUE            ~ ""
+    ),
+    estimate_ci = sprintf("%.2f (%.2f–%.2f)%s", estimate, conf.low, conf.high, sig)
+  ) %>%
+  filter(term != "(Intercept)") %>%
+  select(y.level, term, estimate_ci) %>%
+  pivot_wider(names_from = y.level, values_from = estimate_ci)
+
+
+# =============================================================================
+# EXPORT ALL TO EXCEL
+# =============================================================================
+
+library(openxlsx)
+
+wb <- createWorkbook()
+
+addWorksheet(wb, "Table 1 - Full Cohort")
+addWorksheet(wb, "Table 2 - Dual vs Single")
+addWorksheet(wb, "Table 3 - Logistic Reg")
+addWorksheet(wb, "sTable 1 - Multinomial")
+
+
+writeData(wb, "Table 1 - Full Cohort",     table1_df, rowNames = TRUE)
+writeData(wb, "Table 2 - Dual vs Single",  table2_df, rowNames = TRUE)
+writeData(wb, "Table 3 - Logistic Reg",    table3_df)
+writeData(wb, "sTable 1 - Multinomial",    stable1_df)
+
+# Auto-size columns
+for (sheet in names(wb)) {
+  setColWidths(wb, sheet, cols = 1:20, widths = "auto")
+}
+
+# Bold headers
+header_style <- createStyle(textDecoration = "bold")
+for (sheet in names(wb)) {
+  addStyle(wb, sheet, header_style, rows = 1, cols = 1:20)
+}
+
+#saveWorkbook(wb, "ICI_Treatment_Patterns_Tables2.xlsx", overwrite = TRUE)
+
+quantile(data_t2$AGERECODEWITHSINGLEAGES_AND_100, probs = c(0.25, 0.50, 0.75), na.rm = TRUE)
+data_t2 %>%
+  group_by(exposure_arm) %>%
+  summarise(
+    Q1     = quantile(AGERECODEWITHSINGLEAGES_AND_100, 0.25, na.rm = TRUE),
+    median = quantile(AGERECODEWITHSINGLEAGES_AND_100, 0.50, na.rm = TRUE),
+    Q3     = quantile(AGERECODEWITHSINGLEAGES_AND_100, 0.75, na.rm = TRUE),
+    IQR    = Q3 - Q1
+  )
+IQR(data_t2$AGERECODEWITHSINGLEAGES_AND_100)
+
+median(data_t2$days_dx_to_tx)
+quantile(data_t2$days_dx_to_tx, probs = c(0.25, 0.50, 0.75), na.rm = TRUE)
+data_t2 %>%
+  group_by(exposure_arm) %>%
+  summarise(
+    Q1     = quantile(days_dx_to_tx, 0.25, na.rm = TRUE),
+    median = quantile(days_dx_to_tx, 0.50, na.rm = TRUE),
+    Q3     = quantile(days_dx_to_tx, 0.75, na.rm = TRUE),
+    IQR    = Q3 - Q1
+  )
+```
+
+#where does missingness come from?
+
+```{r}
+
+missing_summary <- data_t2 %>%
+  summarise(
+    across(
+      all_of(cat_vars_t1),
+      ~ sum(is.na(.)),
+      .names = "n_miss_{.col}"
+    )
+  )
+
+
+missing_summary
+
+#n_miss_primary_site_group = 1
+#charlson = 2
+#n_miss_autoimmune_recode = 1
+
+
+```
+Forest plot
+```{r, fig.width=10}
+
+#forest ----------------------------------------------------------------------------------------------------------------
+#model_t3 <- glm(dual ~ dx_year_recode + age_75_binary + sex_recode + race_binary + radiatio_binary + yost_tertile +
+  #  pre_ici_surg + charlson_recode + NCI_index + autoimmune_recode +
+  #  braf_recode + time_to_ici + firstline_ici_recode + histo_C +
+  #  primary_site_group + mets_brain_claims + n_mets_cat,
+  # data = data_t2,
+  #family = binomial
+#)
+
+summary(model_t3)
+tidy(model_t3)$term
+#prep data for plot
+or_df <- tidy(
+  model_t3,
+  conf.int = TRUE,
+  exponentiate = TRUE
+) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    term = dplyr::recode(term,
+
+      # Year of diagnosis (ref = 2015)
+      "YEAR_CAT2016+" = "Year of diagnosis: 2018 (vs. 2015)",
+     "YEAR_CAT2013–2014" = "Year of diagnosis: 2019 (vs. 2015)",
+
+      # Demographics
+      "age_75_binary75+" = "Age ≥75 years (vs. <75)",
+      "sex_recodeFemale" = "Female (vs. Male)",
+      "race_binaryNon-white/Unknown" = "Non-White/Unknown (vs. White)",
+
+      # Clinical history
+      "pre_ici_surgYes" = "Pre-ICI surgical resection (vs. No)",
+      "charlson_recode1" = "Charlson Comorbidity Index = 1 (vs. 0)",
+      "charlson_recode2+" = "Charlson Comorbidity Index ≥2 (vs. 0)",
+      "NCI_index" = "NCI Comorbidity Index (continuous)",
+      "autoimmune_recodeYes" = "History of autoimmune disease (vs. No)",
+      "braf_recodeYes" = "BRAF mutation (vs. No)",
+
+      # Treatment timing
+      "time_to_ici3–12 months" = "Time to ICI: 3–12 months (vs. ≤3 months)",
+      "time_to_ici>12 months" = "Time to ICI: >12 months (vs. ≤3 months)",
+
+      # Treatment sequence
+      "firstline_ici_recodeFirst SACT" = "First systemic anticancer therapy (vs. Second)",
+
+      # Histology
+      "histo_CNon-UV (Acral/Mucosal/Desmo)" =
+        "Histology: Non-UV (Acral/Mucosal/Desmoplastic) (vs. UV-Associated)",
+      "histo_COther/Unknown" =
+        "Histology: Other/Unknown (vs. UV-Associated)",
+
+      # Primary site
+      "primary_site_groupHead/Neck" =
+        "Primary site: Head/Neck (vs. Trunk)",
+      "primary_site_groupExtremity" =
+        "Primary site: Extremity (vs. Trunk)",
+      "primary_site_groupNOS" =
+        "Primary site: Not otherwise specified (vs. Trunk)",
+
+      # Disease severity
+      "mets_brain_claimsYes" =
+        "Brain metastases (vs. No)",
+      "ruralityUrban" =
+        "Urban residence (vs. Metropolitan)",
+      "ruralityRural" =
+        "Rural residence (vs. Metropolitan)",
+      "n_mets_cat1" =
+        "1 metastatic site (vs. 0)",
+      "n_mets_cat2+" =
+        "≥2 metastatic sites (vs. 0)"
+    ),
+    abs_log_or = abs(log(estimate))
+  ) %>%
+  arrange(desc(abs_log_or)) %>%
+  mutate(term = factor(term, levels = rev(term)))
+
+
+or_df <- or_df %>%
+  arrange(estimate) %>%   # OR < 1 first
+  mutate(term = factor(term, levels = term))
+
+#generate plot
+ggplot(or_df, aes(x = estimate, y = term)) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "gray50") +
+  geom_point(size = 2) +
+  geom_errorbarh(
+    aes(xmin = conf.low, xmax = conf.high),
+    height = 0.2
+  ) +
+  scale_x_log10() +
+  labs(
+    x = "Adjusted Odds Ratio (log scale)",
+    y = NULL,
+    title = "Factors Associated with Receipt of Dual vs Single ICI Therapy",
+    subtitle = "Adjusted odds ratios with 95% confidence intervals"
+  ) +
+  theme_minimal(base_size = 12)
+
+```

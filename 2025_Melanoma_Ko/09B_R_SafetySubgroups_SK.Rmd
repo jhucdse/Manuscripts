@@ -1,0 +1,482 @@
+---
+title: "Safety Subgroup Analyses"
+author: "Sophia Ko"
+date: "2026-03-02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(survival)
+library(survminer)
+library(haven)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(survey)
+library(cobalt)
+library(table1)
+library(cmprsk)        # Fine-Gray, CIF
+library(tidycmprsk)    # tidy wrappers for cmprsk
+library(ggsurvfit)     # CIF plotting
+
+data <- readRDS("../Data/processed/skin_ici_outcomes_safety.RDS")
+data_full <- readRDS("../Data/processed/skin_ici_outcomes3.rds")
+data_full <- data_full %>%
+  mutate(
+    rurality = case_when(
+      RURAL_URBAN_CONTINUUM_CODE_2013 %in% c(1, 2, 3) ~ "Metropolitan",
+      RURAL_URBAN_CONTINUUM_CODE_2013 %in% c(4, 5, 6, 7) ~ "Urban",
+      RURAL_URBAN_CONTINUUM_CODE_2013 %in% c(8, 9) ~ "Rural"
+    ),
+    rurality = factor(rurality, levels = c("Metropolitan", "Urban", "Rural"))
+  )
+
+```
+Evidence of effect measure modification, using the full cohort:
+```{r}
+
+fg_data <- finegray(
+  Surv(years_to_end_followup2, factor(censor_flag2)) ~ .,
+  data = data %>% select(PATIENT_ID, years_to_end_followup2, censor_flag2,
+                         exposure_arm, sw_t_norm,
+                         age_75_binary, seer_brain_dx, n_mets_seer_cat,
+                         sex_recode, autoimmune_recode),
+  etype = "1"
+)
+
+fg_data <- fg_data %>% mutate(combined_wt = fgwt * sw_t_norm)
+
+test_interaction <- function(fg_data, modifier_var, label) {
+  
+  form <- as.formula(paste0(
+    "Surv(fgstart, fgstop, fgstatus) ~ factor(exposure_arm) * factor(", 
+    modifier_var, ")"
+  ))
+  
+  model <- coxph(
+    form,
+    data = fg_data,
+    weights = combined_wt,
+    id = PATIENT_ID,
+    robust = TRUE
+  )
+  
+  # Extract interaction term(s)
+  coefs <- summary(model)$coefficients
+  interaction_rows <- grepl(":", rownames(coefs))
+  
+  data.frame(
+    subgroup = label,
+    p_interaction = round(coefs[interaction_rows, "Pr(>|z|)"], 4)
+  )
+}
+
+# Run for each subgroup
+int_results <- bind_rows(
+  test_interaction(fg_data, "age_75_binary", "Age"),
+  test_interaction(fg_data, "seer_brain_dx", "Brain Mets"),
+  test_interaction(fg_data, "n_mets_seer_cat", "Mets Sites"),
+  test_interaction(fg_data, "sex_recode", "Sex"),
+  test_interaction(fg_data, "autoimmune_recode", "Autoimmune")
+)
+
+int_results
+
+```
+
+
+Subgroup analysis function:
+```{r}
+run_subgroup_analysis <- function(subgroup_data, 
+                                  omit_var,
+                                  subgroup_label = "Subgroup",
+                                  trim_quantiles = c(0.01, 0.99)) {
+  
+  # --- Define covariates, omitting the stratification variable ---
+  cat_vars_sub <- setdiff(c(
+    "sex_recode", "pre_ici_surg", "charlson_recode",
+    "autoimmune_recode", "braf_recode", "firstline_ici_recode", 
+   "primary_site_group",
+    "seer_brain_dx", "n_mets_seer_cat", "rurality", "age_75_binary"
+  ), omit_var)
+  
+  cont_vars_sub <- setdiff(c(
+    "NCI_index", "days_dx_to_tx"
+  ), omit_var)
+  
+  all_covariates_sub <- c(cat_vars_sub, cont_vars_sub)
+  
+  # --- Prep data ---
+  df <- subgroup_data %>%
+    mutate(across(all_of(cat_vars_sub), as.factor)) %>%
+    mutate(across(all_of(cont_vars_sub), as.numeric)) %>%
+    mutate(
+      dual = case_when(
+        exposure_arm == "Dual (PD-1 + CTLA-4) ICI therapy" ~ 1,
+        exposure_arm == "Single (PD-1 or CTLA-4) ICI therapy" ~ 0,
+        TRUE ~ NA_real_
+      )
+    ) %>%
+    filter(
+      !is.na(dual),
+      !is.na(charlson_recode),
+      !is.na(autoimmune_recode),
+      !YOST_ACS_2013_2017_QUINTILE == 6,
+      !is.na(NCI_index),
+      !is.na(primary_site_group)
+    ) %>%
+    droplevels()
+  
+  n_dual <- sum(df$dual == 1)
+  n_single <- sum(df$dual == 0)
+  cat(sprintf("\n=== %s: n_single=%d, n_dual=%d ===\n", subgroup_label, n_single, n_dual))
+  
+  # --- Check: enough events in both arms? ---
+  if (n_dual < 5 | n_single < 5) {
+    warning(paste0(subgroup_label, ": Too few patients in one arm. Skipping."))
+    return(NULL)
+  }
+  
+  # --- Drop covariates with zero variance within subgroup ---
+  drop_vars <- c()
+  for (v in all_covariates_sub) {
+    if (is.factor(df[[v]])) {
+      tbl <- table(df[[v]])
+      if (any(tbl == 0) | length(tbl) < 2) {
+        drop_vars <- c(drop_vars, v)
+        cat(sprintf("  Dropping %s (zero-cell or single level)\n", v))
+      }
+    } else {
+      if (sd(df[[v]], na.rm = TRUE) == 0) {
+        drop_vars <- c(drop_vars, v)
+        cat(sprintf("  Dropping %s (zero variance)\n", v))
+      }
+    }
+  }
+  all_covariates_sub <- setdiff(all_covariates_sub, drop_vars)
+  
+  # --- PS Model ---
+  ps_formula <- as.formula(paste("dual ~", paste(all_covariates_sub, collapse = " + ")))
+  
+  ps_model <- tryCatch(
+    glm(ps_formula, data = df, family = binomial(link = "logit")),
+    error = function(e) {
+      warning(paste0(subgroup_label, ": PS model failed - ", e$message))
+      return(NULL)
+    }
+  )
+  if (is.null(ps_model)) return(NULL)
+  
+  df <- df %>% mutate(ps = predict(ps_model, type = "response"))
+  
+  # --- Stabilized IPTW weights ---
+  pbar <- mean(df$dual, na.rm = TRUE)
+  df <- df %>%
+    mutate(
+      sw = ifelse(dual == 1, pbar / ps, (1 - pbar) / (1 - ps))
+    )
+  
+  sw_lo <- quantile(df$sw, trim_quantiles[1], na.rm = TRUE)
+  sw_hi <- quantile(df$sw, trim_quantiles[2], na.rm = TRUE)
+  df <- df %>%
+    mutate(
+      sw_t = pmax(pmin(sw, sw_hi), sw_lo),
+      sw_t_norm = sw_t / mean(sw_t, na.rm = TRUE)
+    )
+  
+  cat(sprintf("  Mean stabilized weight: %.4f\n", mean(df$sw_t, na.rm = TRUE)))
+  
+  # --- Fine-Gray: Unadjusted ---
+  fg_data <- finegray(
+    Surv(years_to_end_followup2, factor(censor_flag2)) ~ .,
+    data = df %>% select(PATIENT_ID, years_to_end_followup2, censor_flag2,
+                         exposure_arm, sw_t_norm),
+    etype = "1"
+  )
+  fg_data <- fg_data %>% mutate(combined_wt = fgwt * sw_t_norm)
+  
+  fg_unadj <- tryCatch(
+    coxph(
+      Surv(fgstart, fgstop, fgstatus) ~ factor(exposure_arm),
+      data = fg_data, weights = fgwt, id = PATIENT_ID, robust = TRUE
+    ),
+    error = function(e) NULL
+  )
+  
+  # --- Fine-Gray: IPTW-Weighted (full follow-up) ---
+  fg_iptw <- tryCatch(
+    coxph(
+      Surv(fgstart, fgstop, fgstatus) ~ factor(exposure_arm),
+      data = fg_data, weights = combined_wt, id = PATIENT_ID, robust = TRUE
+    ),
+    error = function(e) NULL
+  )
+  
+  # --- Fine-Gray: IPTW 1-year restricted ---
+  fg_data_1yr <- fg_data %>%
+    mutate(
+      fgstop_1yr = pmin(fgstop, 1),
+      fgstatus_1yr = ifelse(fgstop <= 1, fgstatus, 0)
+    )
+  
+  fg_iptw_1y <- tryCatch(
+    coxph(
+      Surv(fgstart, fgstop_1yr, fgstatus_1yr) ~ factor(exposure_arm),
+      data = fg_data_1yr, weights = combined_wt, id = PATIENT_ID, robust = TRUE
+    ),
+    error = function(e) NULL
+  )
+  
+  # --- Extract results ---
+  extract_hr <- function(model, label) {
+    if (is.null(model)) return(data.frame(
+      model = label, sHR = NA, ci_low = NA, ci_high = NA, p = NA
+    ))
+    data.frame(
+      model = label,
+      sHR = round(exp(coef(model)), 3),
+      ci_low = round(exp(confint(model))[1], 3),
+      ci_high = round(exp(confint(model))[2], 3),
+      p = round(summary(model)$coefficients[, "Pr(>|z|)"], 4)
+    )
+  }
+  
+  results <- bind_rows(
+    extract_hr(fg_unadj, "Unadjusted"),
+    extract_hr(fg_iptw, "IPTW Full"),
+    extract_hr(fg_iptw_1y, "IPTW 1-Year")
+  ) %>%
+    mutate(
+      subgroup = subgroup_label,
+      n_single = n_single,
+      n_dual = n_dual,
+      estimate_ci = sprintf("%.2f (%.2f–%.2f)", sHR, ci_low, ci_high)
+    )
+  
+  # --- PH test ---
+  if (!is.null(fg_iptw)) {
+    ph_test <- cox.zph(fg_iptw)
+    cat(sprintf("  PH test (IPTW full): p = %.4f\n", ph_test$table[1, "p"]))
+  }
+  # --- Plots ---
+  
+  # PS distribution (unweighted)
+  p1 <- ggplot(df, aes(x = ps, fill = factor(dual))) +
+    geom_density(alpha = 0.5) +
+    scale_fill_manual(values = c("0" = "steelblue", "1" = "firebrick"),
+                      labels = c("Single ICI", "Dual ICI")) +
+    labs(title = paste0("PS Distribution: ", subgroup_label),
+         x = "Propensity Score", y = "Density", fill = "Treatment") +
+    theme_classic()
+  print(p1)
+  
+  # PS distribution (weighted)
+  p2 <- ggplot(df, aes(x = ps, weight = sw_t, fill = factor(dual))) +
+    geom_density(alpha = 0.5) +
+    scale_fill_manual(values = c("0" = "steelblue", "1" = "firebrick"),
+                      labels = c("Single ICI", "Dual ICI")) +
+    labs(title = paste0("Weighted PS Distribution: ", subgroup_label),
+         x = "Propensity Score", y = "Weighted Density", fill = "Treatment") +
+    theme_classic()
+  print(p2)
+  
+  # Love plot
+  p3 <- love.plot(
+    ps_model,
+    binary = "std", continuous = "std", s.d.denom = "pooled",
+    thresholds = c(m = 0.1), var.order = "unadjusted", abs = TRUE,
+    weights = df$sw_t,
+    colors = c("firebrick", "steelblue"),
+    shapes = c("circle", "triangle"),
+    title = paste0("Covariate Balance: ", subgroup_label)
+  ) + theme_classic()
+  print(p3)
+  
+  # Weighted KM (cumulative incidence)
+  fit_wt <- survfit(
+    Surv(years_to_end_followup2, censor_flag2 == 1) ~ exposure_arm,
+    data = df, weights = sw_t
+  )
+  p4 <- ggsurvplot(
+    fit = fit_wt, data = df,
+    risk.table = TRUE, palette = "lancet",
+    fun = "event",
+    title = paste0("IPTW Cumulative Incidence irAE: ", subgroup_label),
+    xlab = "Time since ICI index date (years)",
+    ylab = "Cumulative Incidence of Severe irAE",
+    legend.title = "ICI Arm",
+    legend.labs = c("Single", "Dual"),
+    conf.int = FALSE, pval = FALSE,
+    ggtheme = theme_classic()
+  )
+  print(p4)
+  
+  return(list(
+    results = results,
+    data = df,
+    ps_model = ps_model,
+    fg_unadj = fg_unadj,
+    fg_iptw = fg_iptw,
+    fg_iptw_1y = fg_iptw_1y
+  ))
+}
+```
+
+
+Subgroup 1: Age (binary)
+```{r}
+#Step 1: filter to two subgroups
+table(data$age_75_binary)
+data_age75 <- data %>% filter(age_75_binary == "<75")
+data_age76 <- data %>% filter(age_75_binary == "75+")
+run_subgroup_analysis(data_age75, 
+                                  data$age_75_binary,
+                                  subgroup_label = "Age: <75",
+                                  trim_quantiles = c(0.01, 0.99))
+#step 3: second subgroup analysis
+run_subgroup_analysis(data_age76, 
+                                  data$age_75_binary,
+                                  subgroup_label = "Age: 75+",
+                                  trim_quantiles = c(0.01, 0.99))
+
+```
+
+
+Subgroup 2: Brain Mets
+```{r}
+#Step 1: filter to two subgroups
+table(data$seer_brain_dx)
+data_nobmets <- data %>% filter(seer_brain_dx == "No")
+data_bmets <- data %>% filter(seer_brain_dx == "Yes")
+#Step 2: first subgroup analysis
+run_subgroup_analysis(data_nobmets, 
+                                  data$seer_brain_dx,
+                                  subgroup_label = "No Brain Mets at Dx",
+                                  trim_quantiles = c(0.01, 0.99))
+#step 3: second subgroup analysis
+run_subgroup_analysis(data_bmets, 
+                                  data$seer_brain_dx,
+                                  subgroup_label = "Brain Mets at Dx",
+                                  trim_quantiles = c(0.01, 0.99))
+
+# Check effective sample size after weighting
+data_bmets %>% group_by(dual) %>%
+  summarise(
+    n = n(),
+    ESS = (sum(sw_t))^2 / sum(sw_t^2)
+  )
+
+```
+
+
+Subgroup 3: Number of Major Mets Sites at Dx (Brain, lung, bone, and/or Liver)
+```{r}
+#Step 1: filter to two subgroups
+table(data$n_mets_seer_cat)
+data_nmets1 <- data %>% filter(n_mets_seer_cat == "1")
+data_nmets2 <- data %>% filter(n_mets_seer_cat == "2+")
+#Step 2: first subgroup analysis
+run_subgroup_analysis(data_nmets1, 
+                                  data$n_mets_seer_cat,
+                                  subgroup_label = "1 Major Mets Site (brain, lung, bone, or liver)",
+                                  trim_quantiles = c(0.01, 0.99))
+#step 3: second subgroup analysis
+run_subgroup_analysis(data_nmets2, 
+                                  data$n_mets_seer_cat,
+                                  subgroup_label = ">1 Major Mets Sites (brain, lung, bone, or liver)",
+                                  trim_quantiles = c(0.01, 0.99))
+
+```
+
+Subgroup 4: Sex
+```{r}
+#Step 1: filter to two subgroups
+table(data$sex_recode)
+data_m <- data %>% filter(sex_recode == "Male")
+data_f <- data %>% filter(sex_recode == "Female")
+#Step 2: first subgroup analysis
+run_subgroup_analysis(data_m, 
+                                  data$sex_recode,
+                                  subgroup_label = "Males",
+                                  trim_quantiles = c(0.01, 0.99))
+#step 3: second subgroup analysis
+run_subgroup_analysis(data_f, 
+                                  data$sex_recode,
+                                  subgroup_label = "Females",
+                                  trim_quantiles = c(0.01, 0.99))
+
+
+```
+
+Subgroup 5: Hx of Autoimmune disease
+```{r}
+#Step 1: filter to two subgroups
+table(data$autoimmune_recode)
+data_noauto <- data %>% filter(autoimmune_recode == "No")
+data_auto <- data %>% filter(autoimmune_recode == "Yes")
+#Step 2: first subgroup analysis
+run_subgroup_analysis(data_noauto, 
+                                  data$autoimmune_recode,
+                                  subgroup_label = "No Hx of Autoimmune Disease",
+                                  trim_quantiles = c(0.01, 0.99))
+#step 3: second subgroup analysis
+run_subgroup_analysis(data_auto, 
+                                  data$autoimmune_recode,
+                                  subgroup_label = "Hx of Autoimmune Disease",
+                                  trim_quantiles = c(0.01, 0.99))
+
+```
+Exploration using full dataset for more power:
+```{r}
+#Step 1: filter to two subgroups
+table(data_full$autoimmune_recode, useNA = "ifany")
+data_full_noauto <- data %>% filter(autoimmune_recode == "No")
+data_full_auto <- data %>% filter(autoimmune_recode == "Yes")
+
+#Step 2: first subgroup analysis
+run_subgroup_analysis(data_full_noauto, 
+                                  data_full$autoimmune_recode,
+                                  subgroup_label = "No Hx of Autoimmune Disease",
+                                  trim_quantiles = c(0.01, 0.99))
+#step 3: second subgroup analysis
+run_subgroup_analysis(data_full_auto, 
+                                  data_full_auto$autoimmune_recode,
+                                  subgroup_label = "Hx of Autoimmune Disease",
+                                  trim_quantiles = c(0.01, 0.99))
+
+
+#Step 1: filter to two subgroups
+table(data_full$age_75_binary)
+data_age75_full <- data_full %>% filter(age_75_binary == "<75")
+data_age76_full <- data_full %>% filter(age_75_binary == "75+")
+run_subgroup_analysis(data_age75_full, 
+                                  data_full$age_75_binary,
+                                  subgroup_label = "Age: <75",
+                                  trim_quantiles = c(0.01, 0.99))
+#step 3: second subgroup analysis
+run_subgroup_analysis(data_age76_full, 
+                                  data_full$age_75_binary,
+                                  subgroup_label = "Age: 75+",
+                                  trim_quantiles = c(0.01, 0.99))
+
+#brain mets
+data_nobmets_full <- data_full %>% filter(seer_brain_dx == "No")
+data_bmets_full <- data_full %>% filter(seer_brain_dx == "Yes")
+#Step 2: first subgroup analysis
+run_subgroup_analysis(data_nobmets_full, 
+                                  data_full$seer_brain_dx,
+                                  subgroup_label = "No Brain Mets at Dx",
+                                  trim_quantiles = c(0.01, 0.99))
+#step 3: second subgroup analysis
+run_subgroup_analysis(data_bmets_full,
+                      data_full$seer_brain_dx,
+                                  subgroup_label = "Brain Mets at Dx",
+                                  trim_quantiles = c(0.01, 0.99))
+
+```
+
