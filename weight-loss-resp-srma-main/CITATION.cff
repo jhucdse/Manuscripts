@@ -1,0 +1,38 @@
+cff-version: 1.2.0
+message: "If you use these programs, please cite the associated paper."
+type: software
+title: "Analysis programs for Respiratory Adverse Events of Weight-Loss Drugs"
+authors:
+  - family-names: Zeng
+    given-names: Lijuan
+    orcid: "https://orcid.org/0000-0002-4994-3275"
+preferred-citation:
+  type: article
+  title: "Respiratory Adverse Events of Weight-Loss Drugs: A Systematic Review and Meta-Analysis"
+  authors:
+    - family-names: Zeng
+      given-names: Lijuan
+    - family-names: Zinmon-Htet
+      given-names: Celeste
+    - family-names: Hundie
+      given-names: Tsegaye
+    - family-names: Lin
+      given-names: Shanshan
+    - family-names: Baksh
+      given-names: Sheriza N
+    - family-names: Ehrhardt
+      given-names: Stephan
+    - family-names: Wise
+      given-names: Robert A
+    - family-names: Holbrook
+      given-names: Janet T
+    - family-names: McCormack
+      given-names: Meredith C
+    - family-names: Dixon
+      given-names: Anne E
+    - family-names: Saldanha
+      given-names: Ian J
+  journal: "Annals of the American Thoracic Society"
+  year: 2026
+  doi: "10.1093/annalsats/aaoag177"
+  url: "https://doi.org/10.1093/annalsats/aaoag177"

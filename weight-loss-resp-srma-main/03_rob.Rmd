@@ -1,0 +1,274 @@
+---
+title: "Risk of bias"
+author: "Lijuan Zeng"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+Purpose: Create risk-of-bias summary and traffic-light plots.
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls())
+
+library(haven)
+library(here)
+library(dplyr)
+library(tidyr)
+
+# Install robvis once in your analysis environment before rendering.
+# Historical installation command (not run automatically):
+# devtools::install_github("mcguinlu/robvis")
+library(robvis) # for Risk of bias figures
+```
+
+# Fig set up
+```{r}
+if (!dir.exists("fig_rob")) dir.create("fig_rob")
+
+figpath <- here("fig_rob/")
+```
+
+# Input data
+```{r}
+# REVIEW R04: The supplied SAS import creates rob_* variables, not D1-D7.
+# Recover the original included-study plot-input preparation before rendering.
+dat <- read_sas(paste0(here(),"/data_sas/rob_rct.sas7bdat")) %>% 
+  rename (Study = study,
+          Random.sequence.generation = D1,
+          Allocation.concealment = D2,
+          Blinding.of.participants.and.personnel = D3,
+          Blinding.of.outcome.assessment = D4,
+          Incomplete.outcome.data = D5,
+          Selective.reporting = D6,
+          Other.sources.of.bias = D7) %>%
+  mutate(Overall = case_when(
+            # If any domain is High → Overall High
+            if_any(starts_with("Random"):starts_with("Other"), ~ .x == "High") ~ "High",
+            # If none High but any Unclear → Overall Unclear
+            if_any(starts_with("Random"):starts_with("Other"), ~ .x == "Unclear") ~ "Unclear",
+            # If all are Low → Overall Low
+            if_all(starts_with("Random"):starts_with("Other"), ~ .x == "Low") ~ "Low",
+            # Fallback
+            TRUE ~ NA_character_
+          ), 
+         Weight = 0 # Create dummy variables
+         # Convert values as Unclear to No information
+        # , Random.sequence.generation = ifelse(Random.sequence.generation == "Unclear", "No information", Random.sequence.generation),
+        #  Allocation.concealment = ifelse(Allocation.concealment == "Unclear", "No information", Allocation.concealment),
+        #  Blinding.of.participants.and.personnel = ifelse(Blinding.of.participants.and.personnel == "Unclear", "No information", Blinding.of.participants.and.personnel),
+        #  Blinding.of.outcome.assessment = ifelse(Blinding.of.outcome.assessment == "Unclear", "No information", Blinding.of.outcome.assessment),
+        #  Incomplete.outcome.data = ifelse(Incomplete.outcome.data == "Unclear", "No information", Incomplete.outcome.data),
+        #  Selective.reporting = ifelse(Selective.reporting == "Unclear", "No information", Selective.reporting),
+        #  Other.sources.of.bias = ifelse(Other.sources.of.bias == "Unclear", "No information", Other.sources.of.bias)
+         ) 
+
+
+
+```
+
+```{r}
+summary_rob <- rob_summary(data = dat[1:9], tool = "Generic", overall = FALSE, weighted = FALSE)
+```
+
+
+```{r, fig.width= 8, fig.height= 3.5}
+summary_rob
+```
+```{r}
+rob_save(summary_rob, paste0(figpath, "rob_summary.png"))
+```
+
+
+## Use ggplot to program this figure
+
+The unclear part somehow cannot be shown in the figure, so I use the original data to plot it.
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(forcats)
+library(stringr)
+
+# Reshape and summarize
+rob_data <- dat %>%
+  select(Random.sequence.generation:Overall) %>%
+  pivot_longer(
+    everything(),
+    names_to = "Domain",
+    values_to = "Rating"
+  ) %>%
+  group_by(Domain, Rating) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(Domain) %>%
+  mutate(pct = n / sum(n) * 100)
+
+# Domain column cleanup — convert dots to spaces, including "Overall" if present
+domain_levels <- colnames(dat %>% select(Random.sequence.generation:Other.sources.of.bias))
+domain_levels_clean <- str_replace_all(domain_levels, "\\.", " ")
+
+# If "Overall" is in the reshaped data, handle it
+if ("Overall" %in% unique(rob_data$Domain)) {
+  domain_levels_clean <- c(domain_levels_clean, "Overall")
+}
+
+rob_data$Domain <- factor(
+  str_replace_all(as.character(rob_data$Domain), "\\.", " "),
+  levels = rev(domain_levels_clean)  # Top to bottom order
+)
+
+# Set factor levels for rating order: Low → Unclear → High
+rob_data$Rating <- factor(rob_data$Rating, levels = c("High", "Unclear", "Low"))
+
+# Define Cochrane colors
+rob_colors <- c(
+  "High" = "#BF0000",      # Red 
+  "Unclear" = "#E2DF07",  # Yellow
+  "Low" = "#02C100"      # Green
+)
+
+    #   if (colour == "colourblind") {
+    #     rob_colours$low_colour <- "#fed98e"
+    #     rob_colours$concerns_colour <- "#fe9929"
+    #     rob_colours$high_colour <- "#d95f0e"
+    #     rob_colours$ni_colour <- "#ffffff"
+    #   }
+    #   if (colour == "cochrane") {
+    #     rob_colours$low_colour <- "#02C100"
+    #     rob_colours$concerns_colour <- "#E2DF07"
+    #     rob_colours$high_colour <- "#BF0000"
+    #     rob_colours$ni_colour <- "#4EA1F7"
+    #   }
+    # }
+
+```
+
+
+```{r}
+# Plot
+ggplot(rob_data, aes(x = pct, y = Domain, fill = Rating)) +
+  geom_bar(stat = "identity", position = "stack", color = "black", width = 0.8) +
+  scale_fill_manual(
+  values = rob_colors,
+  labels = c("High risk of bias","Unclear", "Low risk of bias"),
+  name = NULL
+) +
+  scale_x_continuous(
+    expand = c(0.01, 0),  # adds margin on left/right side
+    labels = scales::percent_format(scale = 1)
+  ) +
+  theme_minimal() +
+  labs(x = "", y = "") +
+theme(
+  panel.grid.major.y = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.grid.major.x = element_blank(),
+  panel.grid.minor.x = element_blank(),
+  panel.background = element_rect(fill = "white", color = NA),
+  plot.background = element_rect(fill = "white", color = NA),
+  axis.line.x = element_line(color = "black"),
+  axis.ticks.x = element_line(color = "black"),
+  axis.text.x = element_text(size = 10),
+  axis.text.y = element_text(size = 10, hjust = 1),
+  legend.position = "bottom",
+  legend.text = element_text(size = 7),
+  legend.key.height = unit(0.6, "lines"),
+  legend.key.width = unit(0.8, "lines"),
+  legend.background = element_rect(color = "black", fill = "white"),
+  # panel.spacing = unit(0.5, "lines"),
+  plot.margin = margin(t = 10, r = 10, b = 5, l = 10),
+  legend.margin = margin(2,2,2,2, unit = "pt")
+)
+
+```
+
+
+```{r}
+ggsave(paste0(figpath, "rob_summary_v2.png"), width = 6.5, height = 2.5, units = "in", dpi = 300)
+```
+
+
+
+# Traffic light plot
+```{r}
+trafficlight_rob <- rob_traffic_light(data = dat[1:9], tool = "Generic", psize = 10)
+```
+
+```{r}
+rob_save(trafficlight_rob, paste0(figpath, "rob_traffic_light.png"))
+```
+
+```{r}
+library(dplyr)
+library(robvis)
+library(grid)
+library(gridExtra)
+
+```
+
+## Split into multiple figres
+
+```{r}
+n_per_plot <- 30
+n_studies <- nrow(dat)
+n_plots <- ceiling(n_studies / n_per_plot)
+p_size <- 6
+
+# Sort the study by variable STUDY
+dat <- dat %>%
+  arrange(Study) %>%
+  mutate(Study = factor(Study, levels = unique(Study)))
+
+
+for (i in 1:n_plots) {
+  start_row <- (i - 1) * n_per_plot + 1
+  end_row <- min(i * n_per_plot, n_studies)
+  dat_subset <- dat[start_row:end_row, ]
+
+  # Create plot
+  trafficlight_plot <- rob_traffic_light(data = dat_subset, tool = "Generic", psize = p_size)
+
+  # Add title label
+  title_text <- paste0(LETTERS[i], ": Risk of Bias – Studies ", start_row, " to ", end_row)
+  title_grob <- textGrob(title_text, gp = gpar(fontsize = 12, fontface = "bold"))
+
+  # Combine title and plot
+  combined <- arrangeGrob(title_grob, trafficlight_plot, ncol = 1, heights = c(0.05, 1))
+
+  # Save to file
+  ggsave(
+    filename = paste0(figpath, "rob_traffic_light_part", i, ".png"),
+    plot = combined,
+    width = 8,
+    height = 1.2 + 0.25 * nrow(dat_subset),
+    dpi = 300
+  )
+}
+
+```
+
+## Create a separate legend for each
+
+```{r}
+# Use the first batch to generate a dummy plot just for the legend
+legend_plot <- rob_traffic_light(data = dat[1:5, ], tool = "Generic", psize = p_size)
+
+# Extract and save legend
+legend_grob <- cowplot::get_legend(legend_plot)
+
+ggsave(
+  filename = paste0(figpath, "rob_legend.png"),
+  plot = grid.arrange(legend_grob),
+  width = 5,
+  height = 1,
+  dpi = 300
+)
+
+```
+
+
+
+

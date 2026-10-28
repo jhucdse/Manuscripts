@@ -1,0 +1,334 @@
+---
+title: "Output: proportional MA - w results summary"
+author: "Lijuan Zeng"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+Purpose: Estimate arm-level respiratory-event proportions and export summaries
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls())
+
+library(haven)
+library(here)
+library(dplyr)
+library(rlang)
+library(writexl)
+
+library(meta)
+library(metafor)
+```
+
+
+
+# Load data
+
+```{r load_data, echo=FALSE}
+datapath <- paste0(here(),"/data_sas/")
+
+dat_rct_include<- read_sas(paste0(datapath, "study_kq1_rct_include.sas7bdat"))
+dat_include <- read_sas(paste0(datapath, "study_kq1_include.sas7bdat"))
+dat_inc_arm <- read_sas(paste0(datapath, "study_kq1_inc_arms.sas7bdat"))
+dat_inc_outcome_l <- read_sas(paste0(datapath, "kq1_inc_rct_results_l_arms_ndsty.sas7bdat"))
+```
+
+## Subdata for diabetes and weight loss
+```{r}
+dat_inc_outcome_dm <- read_sas(paste0(datapath, "kq1_inc_rct_results_l_arms_dm.sas7bdat"))
+dat_inc_outcome_wgt <- read_sas(paste0(datapath, "kq1_inc_rct_results_l_arms_wgt.sas7bdat"))
+```
+
+## Subdata for GLP-1Ra
+```{r echo=FALSE}
+dat_inc_outcome_glp <- dat_inc_outcome_l %>%
+  mutate(
+    drug_group2 = case_when(
+      drug_group0  %in% c("Liraglutide", "Semaglutide", "Tirzepatide") ~ "GLP-1Ra",
+      TRUE ~ "Other"
+    )
+  )
+
+```
+
+# Function for summarizing MA results
+```{r}
+meta_analysis_summary <- function(data, drug_group_var, drug_group, pscale = 100, safe_drug_name = NULL) {
+  library(dplyr)
+  library(meta)
+
+  # Dynamically specify the drug group variable
+  drug_group_filter <- sym(drug_group_var)
+
+  # Get unique ae_term and time_frame values
+  ae_terms <- unique(data$outcome_l2)
+  time_frames <- unique(data$timec2)
+
+  # Initialize results dataframe
+  results <- data.frame(ae_term = character(),
+                         time_frame = character(),
+                         proportion = numeric(),
+                         ci_lower = numeric(),
+                         ci_upper = numeric(),
+                         num_studies = integer(),
+                         effect_ci = character(),
+                         stringsAsFactors = FALSE)
+
+  # Loop through all combinations of ae_term and time_frame
+  for (ae_term in ae_terms) {
+    for (time_frame in time_frames) {
+      
+      # Filter data
+      filtered_data <- data %>%
+        filter(!!drug_group_filter == drug_group & 
+                 outcome_l2 == ae_term & 
+                 timec2 == time_frame)
+      
+      # Check if there are any rows for this combination
+      if (nrow(filtered_data) == 0) next
+      
+      # Run meta-analysis
+      # REVIEW R09: Errors are silently skipped; check omitted combinations in the original environment.
+      pes.summary <- tryCatch({
+        metaprop(events, total_n, study, data = filtered_data, 
+                 sm = "PFT", method.tau = "DL", method.ci = "NAsm")
+      }, error = function(e) return(NULL))
+
+      if (is.null(pes.summary)) next
+      
+      # Perform PFT backtransformation
+      n_mean <- 1 / mean(1 / filtered_data$total_n)
+      proportion <- meta:::backtransf(pes.summary$TE.random, sm = "PFT", n = n_mean) * pscale
+      tot_arm_sample_size <- sum(filtered_data$total_n)
+      # Conditionally calculate confidence intervals only if more than one study
+      if (pes.summary$k > 1) {
+        ci_lower <- meta:::backtransf(pes.summary$lower.random, sm = "PFT", n = n_mean) * pscale
+        ci_upper <- meta:::backtransf(pes.summary$upper.random, sm = "PFT", n = n_mean) * pscale
+      } else {
+        ci_lower <- NA
+        ci_upper <- NA
+      }
+      
+      # Create effect size summary
+      if (pes.summary$k == 1) {
+        # Only one study — no CI
+        effect_ci <- if (proportion > 0 && proportion < 0.1) {
+          "<0.1"
+        } else {
+          as.character(round(proportion, 1))
+        }
+      } else {
+        # Multiple studies — include CI
+        if (proportion > 0 && proportion < 0.1) {
+          effect_ci <- paste0("<0.1 (", round(ci_lower,1), ", ", round(ci_upper,1), ")")
+        } else {
+          effect_ci <- paste0(round(proportion,1), " (", round(ci_lower,1), ", ", round(ci_upper,1), ")")
+        }
+      }
+
+      
+      # Append results
+      results <- rbind(results, data.frame(
+        ae_term = ae_term,
+        time_frame = time_frame,
+        proportion = proportion,
+        ci_lower = ci_lower,
+        ci_upper = ci_upper,
+        num_arms = pes.summary$k,
+        tot_arm_sample_size = tot_arm_sample_size,
+        effect_ci = effect_ci
+      ))
+    }
+  }
+  
+  # Create filename with drug name (safe for filenames)
+  # Set safe_drug_name if not provided
+  if (is.null(safe_drug_name)) {
+    safe_drug_name <- gsub("[^a-zA-Z0-9]", "_", drug_group)
+  }
+  
+  # Save to Excel and RData
+  file_name <- paste0("data/03_percMA_wSumm_", safe_drug_name, ".csv")
+  write.csv(results, file_name)
+  
+  rdata_file_name <- paste0("data/03_percMA_wSumm_", safe_drug_name, ".RData")
+  save(results, file = rdata_file_name)
+
+  return(results)
+
+} 
+
+```
+
+# Run meta-analysis and summarize results
+
+## Liraglutide
+
+### Total
+```{r}
+summary_results_lira_tot <- meta_analysis_summary(dat_inc_outcome_l, "drug_group0", "Liraglutide")
+```
+
+### By drug/dose
+```{r}
+summary_results_lira_tot12 <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Liraglutide 1.2 mg")
+summary_results_lira_tot18 <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Liraglutide 1.8 mg")
+summary_results_lira_tot30 <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Liraglutide 3.0 mg")
+summary_results_lira_totOt <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Liraglutide Other")
+```
+
+### Diabetes subset
+```{r}
+table(dat_inc_outcome_dm$drug_group1)
+```
+
+
+```{r}
+summary_results_lira_tot_dm <- meta_analysis_summary(dat_inc_outcome_dm, "drug_group0", "Liraglutide", safe_drug_name = "Liraglutide_DM")
+
+# REVIEW R03: These four DM-labelled dose calls use the full dataset.
+# Confirm against the final analysis before substituting dat_inc_outcome_dm.
+summary_results_lira_tot_dm12 <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Liraglutide 1.2 mg", safe_drug_name = "Liraglutide_1_2_mg_DM")
+summary_results_lira_tot_dm18 <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Liraglutide 1.8 mg", safe_drug_name = "Liraglutide_1_8_mg_DM")
+summary_results_lira_tot_dm30 <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Liraglutide 3.0 mg", safe_drug_name = "Liraglutide_3_0_mg_DM")
+summary_results_lira_tot_dmOt <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Liraglutide Other", safe_drug_name = "Liraglutide_Other_DM")
+```
+
+### Weight mgmt subset
+```{r}
+table(dat_inc_outcome_wgt$drug_group1)
+```
+
+```{r}
+summary_results_lira_tot_wgt <- meta_analysis_summary(dat_inc_outcome_wgt, "drug_group0", "Liraglutide", safe_drug_name = "Liraglutide_WGT")
+
+summary_results_lira_tot_wgt12 <- meta_analysis_summary(dat_inc_outcome_wgt, "drug_group1", "Liraglutide 1.2 mg", safe_drug_name = "Liraglutide_1_2_mg_WGT")
+summary_results_lira_tot_wgt18 <- meta_analysis_summary(dat_inc_outcome_wgt, "drug_group1", "Liraglutide 1.8 mg", safe_drug_name = "Liraglutide_1_8_mg_WGT")
+summary_results_lira_tot_wgt30 <- meta_analysis_summary(dat_inc_outcome_wgt, "drug_group1", "Liraglutide 3.0 mg", safe_drug_name = "Liraglutide_3_0_mg_WGT")
+summary_results_lira_tot_wgtOt <- meta_analysis_summary(dat_inc_outcome_wgt, "drug_group1", "Liraglutide Other", safe_drug_name = "Liraglutide_Other_WGT")
+```
+
+## Semaglutide
+
+### Total
+```{r}
+summary_results_sema_tot <- meta_analysis_summary(dat_inc_outcome_l, "drug_group0", "Semaglutide")
+```
+
+### By drug/dose
+```{r}
+summary_results_sema_tot10 <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Semaglutide 1.0 mg")
+summary_results_sema_tot14 <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Semaglutide 14 mg (OD)")
+summary_results_sema_tot24 <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Semaglutide 2.4 mg")
+summary_results_sema_totOt <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Semaglutide Other")
+```
+
+### Diabetes subset
+```{r}
+summary_results_sema_tot_dm <- meta_analysis_summary(dat_inc_outcome_dm, "drug_group0", "Semaglutide", safe_drug_name = "Semaglutide_DM")
+
+summary_results_sema_tot_dm10 <- meta_analysis_summary(dat_inc_outcome_dm, "drug_group1", "Semaglutide 1.0 mg", safe_drug_name = "Semaglutide_1_0_mg_DM")
+summary_results_sema_tot_dm14 <- meta_analysis_summary(dat_inc_outcome_dm, "drug_group1", "Semaglutide 14 mg (OD)", safe_drug_name = "Semaglutide_14_mg_OD_DM")
+summary_results_sema_tot_dmOt <- meta_analysis_summary(dat_inc_outcome_dm, "drug_group1", "Semaglutide Other", safe_drug_name = "Semaglutide_Other_DM")
+```
+
+### Weight mgmt subset
+```{r}
+summary_results_sema_tot_wgt <- meta_analysis_summary(dat_inc_outcome_wgt, "drug_group0", "Semaglutide", safe_drug_name = "Semaglutide_WGT")
+
+summary_results_sema_tot_wgt10 <- meta_analysis_summary(dat_inc_outcome_wgt, "drug_group1", "Semaglutide 1.0 mg", safe_drug_name = "Semaglutide_1_0_mg_WGT")
+summary_results_sema_tot_wgt24 <- meta_analysis_summary(dat_inc_outcome_wgt, "drug_group1", "Semaglutide 2.4 mg", safe_drug_name = "Semaglutide_2_4_mg_WGT")
+summary_results_sema_tot_wgtOt <- meta_analysis_summary(dat_inc_outcome_wgt, "drug_group1", "Semaglutide Other", safe_drug_name = "Semaglutide_Other_WGT")
+```
+
+## Tirzepatide
+
+### Total
+```{r}
+summary_results_tirz_tot <- meta_analysis_summary(dat_inc_outcome_l, "drug_group0", "Tirzepatide")
+```
+
+### By drug/dose
+```{r}
+summary_results_tirz_tot05 <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Tirzepatide 5 mg")
+summary_results_tirz_tot10 <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Tirzepatide 10 mg")
+summary_results_tirz_tot15 <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Tirzepatide 15 mg")
+summary_results_tirz_totOt <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Tirzepatide Other")
+```
+
+### Diabetes subset
+```{r}
+summary_results_tirz_tot_dm <- meta_analysis_summary(dat_inc_outcome_dm, "drug_group0", "Tirzepatide", safe_drug_name = "Tirzepatide_DM")
+summary_results_tirz_tot_dm05 <- meta_analysis_summary(dat_inc_outcome_dm, "drug_group1", "Tirzepatide 5 mg", safe_drug_name = "Tirzepatide_5_mg_DM")
+summary_results_tirz_tot_dm10 <- meta_analysis_summary(dat_inc_outcome_dm, "drug_group1", "Tirzepatide 10 mg", safe_drug_name = "Tirzepatide_10_mg_DM")
+summary_results_tirz_tot_dm15 <- meta_analysis_summary(dat_inc_outcome_dm, "drug_group1", "Tirzepatide 15 mg", safe_drug_name = "Tirzepatide_15_mg_DM")
+summary_results_tirz_tot_dmOt <- meta_analysis_summary(dat_inc_outcome_dm, "drug_group1", "Tirzepatide Other", safe_drug_name = "Tirzepatide_Other_DM")
+```
+
+### Weight mgmt subset
+```{r}
+summary_results_tirz_tot_wgt <- meta_analysis_summary(dat_inc_outcome_wgt, "drug_group0", "Tirzepatide", safe_drug_name = "Tirzepatide_WGT")
+summary_results_tirz_tot_wgt05 <- meta_analysis_summary(dat_inc_outcome_wgt, "drug_group1", "Tirzepatide 5 mg", safe_drug_name = "Tirzepatide_5_mg_WGT")
+summary_results_tirz_tot_wgt10 <- meta_analysis_summary(dat_inc_outcome_wgt, "drug_group1", "Tirzepatide 10 mg", safe_drug_name = "Tirzepatide_10_mg_WGT")
+summary_results_tirz_tot_wgt15 <- meta_analysis_summary(dat_inc_outcome_wgt, "drug_group1", "Tirzepatide 15 mg", safe_drug_name = "Tirzepatide_15_mg_WGT")
+```
+
+
+## Naltrexone/Bupropion
+
+### Total
+```{r}
+summary_results_nabu_tot <- meta_analysis_summary(dat_inc_outcome_l, "drug_group0", "Naltrexone/Bupropion")
+```
+
+### By drug/dose
+```{r}
+summary_results_lira_tot <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Naltrexone 16 mg/Bupropion 360 mg")
+summary_results_lira_tot <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Naltrexone 32 mg/Bupropion 360 mg")
+```
+
+
+## Phentermine/Topiramate
+
+### Total
+```{r}
+summary_results_phto_tot <- meta_analysis_summary(dat_inc_outcome_l, "drug_group0", "Phentermine/Topiramate")
+```
+
+### By drug/dose
+```{r}
+summary_results_lira_tot <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Phentermine 3.25 mg/Topiramate 23 mg")
+summary_results_lira_tot <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Phentermine 7.5 mg/Topiramate 46 mg")
+summary_results_lira_tot <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Phentermine 15 mg/Topiramate 92 mg")
+```
+
+
+## Orlistat
+
+### By total
+```{r}
+summary_results_orli_tot <- meta_analysis_summary(dat_inc_outcome_l, "drug_group0", "Orlistat")
+```
+
+### By drug/dose
+```{r}
+summary_results_lira_tot <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Orlistat 60 mg")
+summary_results_lira_tot <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Orlistat 120 mg")
+summary_results_lira_tot <- meta_analysis_summary(dat_inc_outcome_l, "drug_group1", "Orlistat 150 mg")
+```
+
+
+## Setmelanotide
+```{r}
+summary_results_Setm_tot <- meta_analysis_summary(dat_inc_outcome_l, "drug_group0", "Setmelanotide")
+```
+
+## GLP1Ra
+```{r}
+summary_results_glp1_tot <- meta_analysis_summary(dat_inc_outcome_glp, "drug_group2", "GLP-1Ra")
+```
+
+
+
+
