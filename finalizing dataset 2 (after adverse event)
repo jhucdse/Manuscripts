@@ -1,0 +1,67 @@
+/*add adverse_event indicator*/
+data mscan.analytical_cohort; /* Replace 'your_dataset' with the actual name of your dataset */
+    set mscan.analytical_cohort;
+    if admdate ne . then adverse_event = 1;
+    else adverse_event = 0;
+run;
+
+/*add interacting indicator*/
+proc sort data=mscan.overlap_period_final_comb;
+    by enrolid overlap_start;
+run;
+
+
+data enrolid_interacting;
+    set mscan.overlap_period_final_comb;
+    by enrolid;
+    if first.enrolid;
+    keep enrolid interacting;
+run;
+
+proc sql;
+    create table mscan.analytical_cohort as
+    select a.*, b.interacting
+    from mscan.analytical_cohort as a
+    left join enrolid_interacting as b
+    on a.enrolid = b.enrolid;
+quit;
+
+/*add censor date = min(discontinuation, switch date, and adverse_event date*/
+data mscan.analytical_cohort; 
+    set mscan.analytical_cohort;
+    censor_date = min(of discontinuation switch_date admdate);
+    format censor_date discontinuation day0 switch_date admdate MMDDYY10.; 
+run;
+
+/*calculate survival time*/
+data mscan.analytical_cohort; 
+    set mscan.analytical_cohort;
+    survival_time = min(of discontinuation switch_date admdate) - day0;
+run;
+
+
+/*add first drug indicator*/
+proc sort data=mscan.unique_enrolid_day0_4;
+    by enrolid;
+run;
+
+
+proc sql;
+    create table mscan.analytical_cohort as
+    select a.*, b.first_drug_final
+    from mscan.analytical_cohort as a
+    left join mscan.unique_enrolid_day0_4 as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data mscan.analytical_cohort; 
+    set mscan.analytical_cohort;
+    end_of_study = 21914;
+    censor_date = min(of discontinuation switch_date admdate end_of_study);
+    format censor_date discontinuation day0 switch_date admdate MMDDYY10.; 
+run;
+
+data mscan.analytical_cohort; 
+    set mscan.analytical_cohort;
+    survival_time = censor_date - day0;
+run;

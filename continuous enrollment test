@@ -1,0 +1,66 @@
+
+**CONTINUOUS ENROLLMENT;
+%macro _5pbenesum( yr, indata);
+data benesum&yr (keep = enrolid enrind1-enrind12 BUYIN_&yr);
+  set mscan.&indata;
+  BUYIN_&yr = compress(enrind1||enrind2||enrind3||enrind4||enrind5||enrind6||enrind7||enrind8||enrind9||enrind10||enrind11||enrind12, " ");
+run;
+
+proc sort data=benesum&yr; by enrolid; run;
+
+Proc sql;
+create table  benesum&yr._1 as
+select a.enrolid, a.BUYIN_&yr
+from benesum&yr as a, mscan.exclude_18 as b
+where a.enrolid = b.enrolid;
+quit;
+
+Proc sort data = benesum&yr._1 nodupkey; by enrolid; run;
+
+%mend _5pbenesum;
+
+%_5pbenesum (2010, all_enrollment_2010);	
+%_5pbenesum (2011, all_enrollment_2011);	
+%_5pbenesum (2012, all_enrollment_2012);	
+%_5pbenesum (2013, all_enrollment_2013);		
+%_5pbenesum (2014, all_enrollment_2014);	
+%_5pbenesum (2015, all_enrollment_2015);	
+%_5pbenesum (2016, all_enrollment_2016);	
+%_5pbenesum (2017, all_enrollment_2017);	
+%_5pbenesum (2018, all_enrollment_2018);		
+%_5pbenesum (2019, all_enrollment_2019);			
+
+data benesum_2010_2019 ;				
+  merge benesum2010_1 benesum2011_1 benesum2012_1 benesum2013_1 benesum2014_1 benesum2015_1 benesum2016_1 benesum2017_1 benesum2018_1 benesum2019_1;
+  by enrolid;
+run;
+
+Proc sql;
+create table raw_cohort1 as
+select * 
+from  benesum_2010_2019 as a,  mscan.exclude_18 as b
+where a.enrolid = b.enrolid;
+quit;
+
+data  raw_cohort2; 
+  set raw_cohort1;
+	BUYIN = BUYIN_2010||BUYIN_2011||BUYIN_2012||BUYIN_2013||BUYIN_2014||BUYIN_2015||BUYIN_2016||BUYIN_2017||BUYIN_2018||BUYIN_2019;
+
+	continuous365 = 0;									
+
+    Start  = (year(day0)-2010)*12 + month(day0) -12;
+	end  = (year(day0)-2010)*12 + month(day0) - 1;
+
+	**365 days prior to index date;
+	do i = start to end until (substr (BUYIN,i,1) not in ('1'));
+			if substr(BUYIN,i,1)in ('1')then continuous365 + 1; end;
+
+	if continuous365 = (end-start)+1 then cont_12mon = 1; else cont_12mon = 0;
+
+run;
+
+
+data raw_cohort3; 	
+set raw_cohort2;
+where cont_12mon = 1;
+run;

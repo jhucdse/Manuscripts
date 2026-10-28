@@ -1,0 +1,14 @@
+/*crude*/
+proc phreg data=mscan.analytical_cohort;
+    class interacting;
+    model survival_time*adverse_event(0) = interacting / ties=breslow;
+    hazardratio 'Interacting' interacting;
+run;
+
+
+/*control for age and gender*/
+proc phreg data=mscan.analytical_cohort;
+    class sex;
+    model survival_time*adverse_event(0) = interacting sex age/ ties=breslow;
+    hazardratio 'Interacting' interacting;
+run;

@@ -1,0 +1,40 @@
+/* Merge the summary dataset with all_bleeding based on enrolid */
+data mscan.merged_dataset;
+    merge mscan.analytical_cohort(in=a) mscan.all_bleeding(in=b);
+    by enrolid;
+    if a and b; /* This keeps only the matched records */
+run;
+
+/* Filter the rows based on the date conditions and create a new dataset */
+data mscan.adverse_event_2wk;
+    set mscan.merged_dataset;
+    format day0 discontinuation admdate mmddyy10.; /* Ensure dates are in the correct format */
+    if admdate >= day0 and admdate <= discontinuation + 14;
+Run;
+
+Proc datasets library=mscan nolist;
+Delete merged_dataset;
+Run;
+
+/*only keeping the first bleeding event*/
+/* Sort the dataset by enrolid and admdate */
+proc sort data=mscan.adverse_event_2wk;
+    by enrolid admdate;
+run;
+
+/* Keep only the first occurrence of each enrolid (i.e., the row with the earliest admdate) */
+data mscan.adverse_event_2wk; 
+    set mscan.adverse_event_2wk;
+    by enrolid;
+    if first.enrolid;
+run;
+
+
+
+proc sql;
+    create table mscan.analytical_cohort_2wk as
+    select a.*, b.admdate as admdate_2wk
+    from mscan.analytical_cohort as a
+    left join mscan.adverse_event_2wk as b
+    on a.enrolid = b.enrolid;
+quit;

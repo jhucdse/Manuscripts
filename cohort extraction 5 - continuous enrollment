@@ -1,0 +1,66 @@
+/*find continuous enrollment*/
+proc sql;
+    create table mscan.day0_month_year as
+    select distinct enrolid, month(day0) as month_day0, year(day0) as year_day0
+    from mscan.exclude_18;
+quit;
+
+/* Sort both datasets by enrolid and year for merging */
+proc sort data=mscan.all_enrollment;
+    by enrolid year;
+run;
+
+proc sort data=mscan.day0_month_year;
+    by enrolid;
+run;
+
+/*  Merge the datasets */
+data mscan.merge_data;
+    merge mscan.all_enrollment (in=a)
+          mscan.day0_month_year (in=b);
+    by enrolid;
+    if b;
+run;
+
+/* Check for continuous enrollment and create a temporary dataset of enrolid values */
+data mscan.temp_continuous;
+    set mscan.merge_data;
+    by enrolid;
+
+    /* Create an array to access the enrind columns */
+    array enrind[12] enrind1 - enrind12;
+    retain continuous 1;
+
+    if first.enrolid then do;
+        continuous = 1;
+        year_diff = year_day0 - year;
+
+        /* If the year is the same as year_day0, check the enrind columns from January to month_day0 */
+        if year_diff = 0 then do;
+            do i = 1 to month_day0;
+                if enrind[i] = 0 then continuous = 0;
+            end;
+        end;
+        
+        /* If the year is the year before year_day0, check the enrind columns from month_day0+1 to December */
+        if year_diff = 1 then do;
+            do i = month_day0 + 1 to 12;
+                if enrind[i] = 0 then continuous = 0;
+            end;
+        end;
+    end;
+
+    if last.enrolid and continuous;
+run;
+
+/* Merge the temporary dataset back with exclude_18 to filter out individuals */
+data mscan.final_continuous_enrollment;
+    merge mscan.exclude_18 (in=a)
+          mscan.temp_continuous (in=b);
+    by enrolid;
+    if b;
+run;
+
+proc datasets library=mscan;
+    delete day0_month_year merge_data temp_continuous;
+run;

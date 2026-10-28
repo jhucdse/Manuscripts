@@ -1,0 +1,9 @@
+srun —x11 —mem 60G —pty bash
+
+Module load sas
+
+sas -helpbrowser SAS -xrm "SAS.webBrowser:'/usr/bin/chromium-browser'" -xrm "SAS.helpBrowser:'/usr/bin/chromium-browser'" 
+
+libname source '/dcl02/alexande/data/MARKETSCAN'; run;
+
+libname mscan '/users/zzhou';run;

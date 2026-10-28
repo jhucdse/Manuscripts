@@ -1,0 +1,104 @@
+/* get all enrollment by year*/
+proc sql;
+    create table mscan.all_enrollment_2010 as
+    select * from source.ccaea103
+    where enrolid in (select enrolid from mscan.unique_enrolid_day0);
+quit;
+
+proc sql;
+    create table mscan.all_enrollment_2011 as
+    select * from source.ccaea112
+    where enrolid in (select enrolid from mscan.unique_enrolid_day0);
+quit;
+
+proc sql;
+    create table mscan.all_enrollment_2012 as
+    select * from source.ccaea121
+    where enrolid in (select enrolid from mscan.unique_enrolid_day0);
+quit;
+
+proc sql;
+    create table mscan.all_enrollment_2013 as
+    select * from source.ccaea131
+    where enrolid in (select enrolid from mscan.unique_enrolid_day0);
+quit;
+
+proc sql;
+    create table mscan.all_enrollment_2014 as
+    select * from source.ccaea141
+    where enrolid in (select enrolid from mscan.unique_enrolid_day0);
+quit;
+
+proc sql;
+    create table mscan.all_enrollment_2015 as
+    select * from source.ccaea151
+    where enrolid in (select enrolid from mscan.unique_enrolid_day0);
+quit;
+
+proc sql;
+    create table mscan.all_enrollment_2016 as
+    select * from source.ccaea161
+    where enrolid in (select enrolid from mscan.unique_enrolid_day0);
+quit;
+
+proc sql;
+    create table mscan.all_enrollment_2017 as
+    select * from source.ccaea171
+    where enrolid in (select enrolid from mscan.unique_enrolid_day0);
+quit;
+
+proc sql;
+    create table mscan.all_enrollment_2018 as
+    select * from source.ccaea181
+    where enrolid in (select enrolid from mscan.unique_enrolid_day0);
+quit;
+
+proc sql;
+    create table mscan.all_enrollment_2019 as
+    select * from source.ccaea192
+    where enrolid in (select enrolid from mscan.unique_enrolid_day0);
+quit;
+
+data mscan.all_enrollment(keep=enrolid year dobyr sex enrind1 enrind2 enrind3 enrind4 enrind5 enrind6 enrind7 enrind8 enrind9 enrind10 enrind11 enrind12);
+    set mscan.all_enrollment_2010 mscan.all_enrollment_2011
+Mscan.all_enrollment_2012 mscan.all_enrollment_2013
+Mscan.all_enrollment_2014 mscan.all_enrollment_2015
+Mscan.all_enrollment_2016 mscan.all_enrollment_2017
+Mscan.all_enrollment_2018 mscan.all_enrollment_2019;
+run;
+
+
+proc sort data=mscan.all_enrollment;
+    by enrolid;
+run;
+
+
+data enrolid_first_dobyr;
+    set mscan.all_enrollment;
+    by enrolid;
+    if first.enrolid;
+    keep enrolid dobyr;
+run;
+
+proc sql;
+    create table mscan.unique_enrolid_day0_dobyr as
+    select a.*, b.dobyr
+    from mscan.no_multiple_statin as a
+    left join enrolid_first_dobyr as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data mscan.exclude_18;
+    set mscan.unique_enrolid_day0_dobyr;
+    if not missing(day0) and not missing(dobyr) then do;
+        age = year(day0) - dobyr;
+    end;
+    else do;
+        delete;
+    end;
+run;
+
+data mscan.exclude_18;
+    set mscan.exclude_18;
+    where age >= 18;
+run;

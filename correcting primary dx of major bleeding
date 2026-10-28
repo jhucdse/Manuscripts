@@ -1,0 +1,750 @@
+data mscan.all_bleeding_primary;
+ set mscan.inpatient;
+  Where dx1 in:(‘430’, ‘431’, ‘4320’, ‘4321’, ‘4329’, ‘8520’,
+ ‘8522’, ‘8524’, ‘8530’, ‘I60’, ‘I61’, ‘I62’, ‘S064’, ‘S065’, ‘S066’, ‘4552’, ‘4555’,
+ ‘4558’, ‘4560’, ‘45620’, ‘5307’, ‘53082’, ‘5310’, ‘5311’, ‘5312’, ‘5313’, ‘5314’, ‘5315’, 
+‘5316’, ‘5320’, ‘5321’, ‘5322’, ‘5323’, ‘5324’, ‘5325’, ‘5326’, ‘5330’, ‘5331’,
+ ‘5332’, ‘5333’, ‘5334’, ‘5335’, ‘5336’, ‘5340’, ‘5341’, ‘5342’, ‘5343’, ‘5344’,
+ ‘5345’, ‘5346’, ‘53501’, ‘53511’, ‘53521’, ‘53531’, ‘53541’, ‘53551’, ‘53561’,
+ ‘53783’, ‘56202’, ‘56203’, ‘56212’, ‘56213’, ‘56881’, ‘5693’, ‘56985’, ‘5780’,
+ ‘5781’, ‘5789’, ‘I850’, ‘K226’, ‘K250’, ‘K251’, ‘K252’, ‘K254’, ‘K255’, ‘K256’,
+ ‘K260’, ‘K261’, ‘K262’, ‘K264’, ‘K265’, ‘K266’, ‘K270’, ‘K271’, ‘K272’, ‘K274’,
+ ‘K275’, ‘K276’, ‘K280’, ‘K281’, ‘K282’, ‘K284’, ‘K285’, ‘K286’, ‘K2901’, ‘K920’,
+ ‘K921’, ‘K922’, ‘I312’, ‘R58’, ‘R31’, ‘M25019’, ‘R04’, ‘4230’, ‘4590’, 
+‘5997’, ‘71911’, ‘7847’, ‘7848’, ‘7863’);
+run;
+
+
+proc sort data=mscan.all_bleeding_primary; by enrolid; run;
+
+/* Merge the summary dataset with all_bleeding based on enrolid */
+data mscan.merged_dataset;
+    merge mscan.analytical_cohort(in=a) mscan.all_bleeding_primary(in=b);
+    by enrolid;
+    if a and b; /* This keeps only the matched records */
+run;
+
+/* Filter the rows based on the date conditions and create a new dataset */
+data mscan.adverse_event_primary;
+    set mscan.merged_dataset;
+    format day0 discontinuation admdate mmddyy10.; /* Ensure dates are in the correct format */
+    if admdate >= day0 and admdate <= discontinuation;
+Run;
+
+Proc datasets library=mscan nolist;
+Delete merged_dataset;
+Run;
+
+/*only keeping the first bleeding event*/
+/* Sort the dataset by enrolid and admdate */
+proc sort data=mscan.adverse_event_primary;
+    by enrolid admdate;
+run;
+
+/* Keep only the first occurrence of each enrolid (i.e., the row with the earliest admdate) */
+data mscan.adverse_event_primary; 
+    set mscan.adverse_event_primary;
+    by enrolid;
+    if first.enrolid;
+run;
+
+data mscan.analytical_cohort_temp;
+  set mscan.analytical_cohort;
+  drop admdate;
+run;
+
+
+proc sql;
+    create table mscan.analytical_cohort_primary as
+    select a.*, b.admdate
+    from mscan.analytical_cohort_temp as a
+    left join mscan.adverse_event_primary as b
+    on a.enrolid = b.enrolid;
+quit;
+
+
+data mscan.analytical_cohort_primary;
+  set mscan.analytical_cohort_primary;
+  adverse_event = 0;
+  if admdate ne . then adverse_event = 1;
+run;
+
+
+data mscan.analytical_cohort_primary; 
+    set mscan.analytical_cohort_primary;
+    censor_date = min(of discontinuation switch_date admdate end_of_study);
+    format censor_date discontinuation day0 switch_date admdate MMDDYY10.; 
+run;
+
+/*calculate survival time*/
+data mscan.analytical_cohort_primary; 
+    set mscan.analytical_cohort_primary;
+    survival_time = censor_date - day0;
+    if survival_time > 730 then survival_time = 730;
+run;
+
+/*change comedication*/
+
+data mscan.analytical_cohort_primary;
+  set mscan.analytical_cohort_primary;
+  drop acei arb av aspirin antiarrhythmics antiplatelets beta_blockers calcium_c_blockers
+    other_antihypertensives diabetes_drugs estrogens progestins heparin_lmwh nsaids nonstatin proton_p_inhibitors other_antihyp ;
+run;
+
+proc sql;
+    create table mscan.comedication_final as
+    select a.enrolid, a.day0, a.censor_date, b.svcdate, b.ndcnum
+    from mscan.analytical_cohort_primary as a
+    left join mscan.comedication as b
+    on a.enrolid = b.enrolid
+    where (a.day0-90) <= b.svcdate < a.day0;
+
+quit;
+
+
+
+/* Sort the mscan.ndc_acei dataset */
+proc sort data=mscan.ndc_acei;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_arb;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_av;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_aspirin;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_antiarrhythmics;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_antiplatelets;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_beta_blockers;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_calcium_channel_blockers;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_diuretics;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_other_antihypertensives;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_diabetes_drugs;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_estrogens;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_progestins;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_heparin_lmwh;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_nsaids;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_nonstatin;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_proton_pump_inhibitors;
+    by ndcnum;
+run;
+
+
+/* Sort the mscan.comedication_final dataset */
+proc sort data=mscan.comedication_final;
+    by ndcnum;
+run;
+
+data mscan.comedication_final;
+    set mscan.comedication_final;
+
+    /* Define the length of the new variable */
+    length new_variable $ 20;
+
+    /* Initialize the new variable to null (missing) */
+    new_variable = '';
+
+run;
+/* Create a temporary dataset with ndcnum from mscan.ndc_acei */
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_acei;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'acei'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_arb;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'arb'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_av;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'av'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_aspirin;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'aspirin'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_antiarrhythmics;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'antiarrhythmics'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_antiplatelets;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'antiplatelets'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_beta_blockers;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'beta_blockers'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_calcium_channel_blockers;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'calcium_c_blockers'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_diuretics;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'diuretics'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_other_antihypertensives;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'otherAH'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_diabetes_drugs;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'diabetes_drugs'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_estrogens;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'estrogens'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_progestins;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'progestins'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_heparin_lmwh;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'heparin_lmwh'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_nsaids;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'nsaids'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_nonstatin;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'nonstatin'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_proton_pump_inhibitors;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'proton_p_inhibitors'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+
+/*setting the analytical_cohort_primary comedication variables*/
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'acei' then acei_flag = 1;
+    else acei_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(acei_flag) as acei_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+
+proc sql;
+    create table mscan.analytical_cohort_primary as
+    select a.*, coalesce(b.acei_flag, 0) as acei
+    from mscan.analytical_cohort_primary as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'arb' then arb_flag = 1;
+    else arb_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(arb_flag) as arb_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort_primary as
+    select a.*, coalesce(b.arb_flag, 0) as arb
+    from mscan.analytical_cohort_primary as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'av' then av_flag = 1;
+    else av_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(av_flag) as av_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort_primary as
+    select a.*, coalesce(b.av_flag, 0) as av
+    from mscan.analytical_cohort_primary as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'aspirin' then aspirin_flag = 1;
+    else aspirin_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(aspirin_flag) as aspirin_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort_primary as
+    select a.*, coalesce(b.aspirin_flag, 0) as aspirin
+    from mscan.analytical_cohort_primary as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'antiarrhythmics' then antiarrhythmics_flag = 1;
+    else antiarrhythmics_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(antiarrhythmics_flag) as antiarrhythmics_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort_primary as
+    select a.*, coalesce(b.antiarrhythmics_flag, 0) as antiarrhythmics
+    from mscan.analytical_cohort_primary as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'antiplatelets' then antiplatelets_flag = 1;
+    else antiplatelets_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(antiplatelets_flag) as antiplatelets_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort_primary as
+    select a.*, coalesce(b.antiplatelets_flag, 0) as antiplatelets
+    from mscan.analytical_cohort_primary as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'beta_blockers' then beta_blockers_flag = 1;
+    else beta_blockers_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(beta_blockers_flag) as beta_blockers_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort_primary as
+    select a.*, coalesce(b.beta_blockers_flag, 0) as beta_blockers
+    from mscan.analytical_cohort_primary as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'calcium_c_blockers' then calcium_c_blockers_flag = 1;
+    else calcium_c_blockers_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(calcium_c_blockers_flag) as calcium_c_blockers_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort_primary as
+    select a.*, coalesce(b.calcium_c_blockers_flag, 0) as calcium_c_blockers
+    from mscan.analytical_cohort_primary as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'diuretics' then diuretics_flag = 1;
+    else diuretics_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(diuretics_flag) as diuretics_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort_primary as
+    select a.*, coalesce(b.diuretics_flag, 0) as diuretics
+    from mscan.analytical_cohort_primary as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'otherAH' then other_antihyp_flag = 1;
+    else other_antihyp_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(other_antihyp_flag) as other_antihyp_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort_primary as
+    select a.*, coalesce(b.other_antihyp_flag, 0) as other_antihyp
+    from mscan.analytical_cohort_primary as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'diabetes_drugs' then diabetes_drugs_flag = 1;
+    else diabetes_drugs_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(diabetes_drugs_flag) as diabetes_drugs_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort_primary as
+    select a.*, coalesce(b.diabetes_drugs_flag, 0) as diabetes_drugs
+    from mscan.analytical_cohort_primary as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'heparin_lmwh' then heparin_lmwh_flag = 1;
+    else heparin_lmwh_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(heparin_lmwh_flag) as heparin_lmwh_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort_primary as
+    select a.*, coalesce(b.heparin_lmwh_flag, 0) as heparin_lmwh
+    from mscan.analytical_cohort_primary as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'nsaids' then nsaids_flag = 1;
+    else nsaids_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(nsaids_flag) as nsaids_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort_primary as
+    select a.*, coalesce(b.nsaids_flag, 0) as nsaids
+    from mscan.analytical_cohort_primary as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'nonstatin' then nonstatin_flag = 1;
+    else nonstatin_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(nonstatin_flag) as nonstatin_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort_primary as
+    select a.*, coalesce(b.nonstatin_flag, 0) as nonstatin
+    from mscan.analytical_cohort_primary as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'proton_p_inhibitors' then proton_p_inhibitors_flag = 1;
+    else proton_p_inhibitors_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(proton_p_inhibitors_flag) as proton_p_inhibitors_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort_primary as
+    select a.*, coalesce(b.proton_p_inhibitors_flag, 0) as proton_p_inhibitors
+    from mscan.analytical_cohort_primary as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*2wk after discontinuation*/
+data mscan.merged_dataset;
+    merge mscan.analytical_cohort_primary(in=a) mscan.all_bleeding_primary(in=b);
+    by enrolid;
+    if a and b; /* This keeps only the matched records */
+run;
+
+/* Filter the rows based on the date conditions and create a new dataset */
+data mscan.adverse_event_2wk_primary;
+    set mscan.merged_dataset;
+    format day0 discontinuation admdate mmddyy10.; /* Ensure dates are in the correct format */
+    if admdate >= day0 and admdate <= discontinuation + 14;
+Run;
+
+Proc datasets library=mscan nolist;
+Delete merged_dataset;
+Run;
+
+/*only keeping the first bleeding event*/
+/* Sort the dataset by enrolid and admdate */
+proc sort data=mscan.adverse_event_2wk_primary;
+    by enrolid admdate;
+run;
+
+/* Keep only the first occurrence of each enrolid (i.e., the row with the earliest admdate) */
+data mscan.adverse_event_2wk_primary; 
+    set mscan.adverse_event_2wk_primary;
+    by enrolid;
+    if first.enrolid;
+run;
+
+
+
+proc sql;
+    create table mscan.analytical_cohort_primary_2wk as
+    select a.*, b.admdate as admdate_2wk
+    from mscan.analytical_cohort_primary as a
+    left join mscan.adverse_event_2wk_primary as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data mscan.analytical_cohort_primary_2wk;
+  set mscan.analytical_cohort_primary_2wk;
+  adverse_event_2wk = 0;
+  if admdate_2wk ne . then adverse_event_2wk = 1;
+run;

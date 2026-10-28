@@ -1,0 +1,190 @@
+proc sql;
+    create table mscan.all_doac_2010 as
+    select enrolid, ndcnum, svcdate, daysupp from source.ccaed103
+    where ndcnum in (select ndcnum from mscan.ndc_doac);
+quit;
+proc sql;
+    create table mscan.all_statin_2010 as
+    select enrolid, ndcnum, svcdate, daysupp from source.ccaed103
+    where ndcnum in (select ndcnum from mscan.ndc_statin);
+quit;
+
+/*find common enrolid among all_doac_claims and all_statin*/
+proc sql;
+    create table mscan.common_unique_enrolids2010 as
+    select distinct a.enrolid
+    from mscan.all_doac_2010 as a, mscan.all_statin_2010 as b
+    where a.enrolid = b.enrolid;
+quit;
+
+/*use common enrolid to extract doac and statin claims*/
+Proc sql;
+	Create table mscan.common_doac2010 as
+	Select * from mscan.all_doac_2010 where enrolid in (select enrolid from mscan.common_unique_enrolids2010);
+Quit;
+Proc sql;
+	Create table mscan.common_statin2010 as
+	Select * from mscan.all_statin_2010 where enrolid in (select enrolid from mscan.common_unique_enrolids2010);
+Quit;
+
+/*add drug name to common_doac and common_statin*/
+proc sort data=mscan.common_doac2010;
+    by ndcnum;
+run;
+proc sort data=mscan.common_statin2010;
+    by ndcnum;
+run;
+data mscan.common_doac2010;
+    merge mscan.common_doac2010 (in=a)
+          mscan.ndc_doac (in=b keep=ndcnum thrdtds rename=(thrdtds=drugname));
+    by ndcnum;
+    if a;
+Run;
+
+proc sort data=mscan.common_statin2010 ;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_statin;
+    by ndcnum;
+run;
+data mscan.common_statin2010;
+    merge mscan.common_statin2010 (in=a)
+          mscan.ndc_statin (in=b keep=ndcnum thrdtds rename=(thrdtds=drugname));
+    by ndcnum;
+    if a;
+Run;
+
+/*add end date for each drug dispensing*/
+Data mscan.common_statin2010;
+    Set mscan.common_statin2010;
+    Enddate = svcdate + daysupp;
+    Format enddate mmddyy10.;
+Run;
+
+Data mscan.common_doac2010;
+    Set mscan.common_doac2010;
+    Enddate = svcdate + daysupp;
+    Format enddate mmddyy10.;
+Run;
+
+/*delete those with days supply <= 0*/
+Data mscan.common_statin2010;
+    Set mscan.common_statin2010;
+    If daysupp > 0;
+Run;
+
+Data mscan.common_doac2010;
+    Set mscan.common_doac2010;
+    If daysupp > 0;
+Run;
+
+
+/*combine common_doac and common_statin and get all_drug_claims*/
+proc sort data=mscan.common_doac2010; by enrolid; run;
+proc sort data=mscan.common_statin2010; by enrolid; run;
+data mscan.all_drug_claims2010;
+    merge mscan.common_doac2010 (in=a rename=(svcdate=svcdate_doac enddate=enddate_doac drugname=doac_name))
+          mscan.common_statin2010(in=b rename=(svcdate=svcdate_statin enddate=enddate_statin drugname=statin_name));
+    by enrolid;
+    if a and b;
+run;
+
+
+/*actual code for overlap periods*/
+data mscan.common_doac2010;
+    set mscan.common_doac2010 (rename=(svcdate=svcdate_doac enddate=enddate_doac));
+run;
+
+data mscan.common_statin2010;
+    set mscan.common_statin2010 (rename=(svcdate=svcdate_statin enddate=enddate_statin));
+run;
+proc sort data=mscan.common_doac2010; by enrolid svcdate_doac enddate_doac; run;
+proc sort data=mscan.common_statin2010; by enrolid svcdate_statin enddate_statin; run;
+data mscan.common_doac2010;
+    set mscan.common_doac2010;
+    rename drugname = doac_name; /* Renaming drugname to doac_name to avoid conflicts */
+run;
+
+data mscan.common_statin2010;
+    set mscan.common_statin2010;
+    rename drugname = statin_name; /* Renaming drugname to statin_name to avoid conflicts */
+run;
+
+proc sort data=mscan.common_doac2010; by enrolid svcdate_doac enddate_doac; run;
+proc sort data=mscan.common_statin2010; by enrolid svcdate_statin enddate_statin; run;
+data mscan.overlap_period_2010;
+    merge mscan.common_doac2010 (in=doac) mscan.common_statin2010 (in=statin);
+    by enrolid;
+    if doac and statin;
+
+    retain day0;
+    if first.enrolid then day0 = .;
+
+    /* Comprehensive condition to check for any overlap */
+    if (svcdate_doac <= enddate_statin and svcdate_statin <= enddate_doac) or
+       (svcdate_doac <= svcdate_statin and enddate_doac >= enddate_statin) or
+       (svcdate_statin <= svcdate_doac and enddate_statin >= enddate_doac) then do;
+        overlap_start = max(svcdate_doac, svcdate_statin);
+        overlap_end = min(enddate_doac, enddate_statin);
+
+        if day0 = . or overlap_start < day0 then day0 = overlap_start;
+        output;
+    end;
+
+    keep enrolid day0 overlap_start overlap_end doac_name statin_name;
+run;
+
+
+/* Sort the data by enrolid and overlap_end in descending order */
+proc sort data=mscan.overlap_period_2010;
+    by enrolid descending overlap_end;
+run;
+
+/* Create a new dataset with the largest overlap_end for each enrolid */
+data mscan.unique_enrolid_maxend2010;
+    set mscan.overlap_period_2010;
+    by enrolid;
+    /* Select the first record for each enrolid, which is the one with the largest overlap_end due to the sorting */
+    if first.enrolid;
+    /* Keep the enrolid and the overlap_end fields */
+    keep enrolid overlap_end;
+run;
+
+
+/* Merge the dataset containing max overlap_end with the analytical cohort */
+proc sql;
+    create table mscan.analytical_cohort_filtered as
+    select a.*, b.overlap_end
+    from mscan.analytical_cohort_primary as a
+    left join mscan.unique_enrolid_maxend2010 as b
+    on a.enrolid = b.enrolid;
+quit;
+
+/* Exclude individuals where max overlap_end is within 1 year prior to day0 */
+data mscan.analytical_cohort_final;
+    set mscan.analytical_cohort_filtered;
+    /* Assuming day0 and overlap_end are SAS date values */
+    if intck('year', overlap_end, day0) > -1 then delete;
+    /* Keep all original variables from analytical_cohort_primary, remove overlap_end if not needed */
+    drop overlap_end;
+run;
+
+proc sql;
+    create table mscan.analytical_cohort_filtered_2wk as
+    select a.*, b.overlap_end
+    from mscan.analytical_cohort_primary_2wk as a
+    left join mscan.unique_enrolid_maxend2010 as b
+    on a.enrolid = b.enrolid;
+quit;
+
+/* Exclude individuals where max overlap_end is within 1 year prior to day0 */
+data mscan.analytical_cohort_final_2wk;
+    set mscan.analytical_cohort_filtered_2wk;
+    /* Assuming day0 and overlap_end are SAS date values */
+    if intck('year', overlap_end, day0) > -1 then delete;
+    /* Keep all original variables from analytical_cohort_primary, remove overlap_end if not needed */
+    drop overlap_end;
+run;
+
+
+

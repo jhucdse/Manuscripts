@@ -1,0 +1,81 @@
+/* Add time from cancer diagnosis to index date to dataset */
+
+proc univariate data=mscan.analytical_cohort; var survival_time; histogram; run;
+
+%let covaraites = age sex hyptertension ckd liver stroke_se alcohol prior_bleeding diabetes chf 
+mi af inpatient_count outpatient_count_final aids ulcer solidtumor cerebro copd dementia malignancy rheumatologic paralysis acei arb av antiarrhythmics antiplatelets
+aspirin beta_blockers calcium_c_blockers diuretics other_antihyp diabetes_drugs heparin_lmwh nsaids nonstatin proton_p_inhibitors;
+
+
+
+proc psmatch data=mscan.analytical_cohort region=allobs;
+		class interacting sex hyptertension ckd liver stroke_se alcohol prior_bleeding diabetes chf 
+mi af aids ulcer solidtumor cerebro copd dementia malignancy rheumatologic paralysis acei arb av antiarrhythmics antiplatelets
+aspirin beta_blockers calcium_c_blockers diuretics other_antihyp diabetes_drugs heparin_lmwh nsaids nonstatin proton_p_inhibitors;
+		psmodel interacting(treated='1')= age inpatient_count outpatient_count_final;
+		assess lps var=(&covaraites)
+						/ varinfo nlargestwgt=6 plots=(barchart boxplot(display=(lps )) wgtcloud) weight=atewgt(stabilize=yes);
+output out(obs=all)=mscan.propensity_score atewgt(stabilize=yes)=_ATEWgt_;
+run;
+proc univariate data=mscan.propensity_score; var _ps_; class interacting; histogram; run; /*propensity score*/
+proc univariate data=mscan.propensity_score; var _ATEWgt_; histogram; run; /*stabilized weights*/
+proc sgplot data=mscan.propensity_score;       
+  histogram _ps_ / group=interacting transparency=0.5;     
+  density _ps_ / type=kernel group=interacting; 
+run;
+proc sgplot data=mscan.propensity_score;          
+  density _ps_ / type=kernel group=interacting; 
+run;
+/*Trimming at 1st and 99th percentile*/
+data mscan.propensity_score_trimmed; 
+set mscan.propensity_score; 
+if 0< _ATEWgt_ < 0.839846 then _ATEWgt_=0.839846; 
+if _ATEWgt_ > 1.185485 then _ATEWgt_=1.185485; 
+if _ATEWgt_=. then delete; 
+run;
+proc sgplot data=mscan.propensity_score_trimmed;       
+  histogram _ATEWgt_ / group=interacting transparency=0.5;     
+  density _ATEWgt_ / type=kernel group=interacting; 
+run;
+proc sgplot data=mscan.propensity_score_trimmed;           
+  density _ATEWgt_ / type=kernel group=interacting; 
+run;
+proc sgplot data=mscan.propensity_score_trimmed;       
+  histogram _ps_ / group=interacting transparency=0.5;     
+  density _ps_ / type=kernel group=interacting; 
+run;
+
+
+
+****************************** Primary outcome: Time to ischemic stroke or systemic embolism ******************************************************************;
+
+/*proc freq data=comp_eff.propensity_score;
+	table (censor_flag censor_flag_2 censor_flag_pneumonia_2)*doac_flag;
+run;*/
+/***. Unadjusted Hazard ratio for ischemic stroke or systematic embolism - competing risk model*/
+proc phreg data=mscan.propensity_score;
+	class interacting / param=ref ref=first; 
+	model survival_time*adverse_event(0) = interacting / eventcode=1 risklimits;
+run;
+
+proc lifetest data=mscan.event_1 plots=cif(test); *Cumulative incidence curve for ischemic stroke or systemic embolism;
+   time time_to_stroke_embolism*censor_flag(0)/eventcode=1;
+   strata doac_flag / order=internal;
+run;
+
+**2. Trimmed IPTW association of ischemic stroke or systematic embolism;
+proc phreg data=mscan.propensity_score_trimmed;
+	class interacting(ref='0') init_yr(ref='2016')/ param=ref;
+	model survival_time*adverse_event(0) = interacting init_yr time_cancer_to_index/ eventcode=1 risklimits;
+	weight _ATEWgt_ / normalize;
+run;
+data treat;
+interacting = 1; output;
+interacting = 0; output; run;
+
+proc phreg data=mscan.propensity_score_trimmed  plots(overlay)=cif;
+	class interacting(ref='0') init_yr(ref='2016')/ param=ref;
+	model survival_time*adverse_event(0) = interacting/ eventcode=1 risklimits;
+	weight _ATEWgt_ / normalize;
+	baseline covariates=treat  / rowid=interacting;
+run;

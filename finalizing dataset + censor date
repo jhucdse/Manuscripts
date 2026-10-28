@@ -1,0 +1,177 @@
+/*current dataset is called mscan.final_continuous_enrollment*/
+proc sql;
+    create table mscan.overlap_period_final as
+    select * from mscan.overlap_period_3
+    where enrolid in (select enrolid from mscan.final_continuous_enrollment);
+quit;
+
+data enrolid_sex;
+    set mscan.all_enrollment;
+    by enrolid;
+    if first.enrolid;
+    keep enrolid sex;
+run;
+
+proc sql;
+    create table mscan.analytical_cohort as
+    select a.*, b.sex
+    from mscan.final_continuous_enrollment as a
+    left join enrolid_sex as b
+    on a.enrolid = b.enrolid;
+    keep enrolid day0 sex;
+quit;
+
+
+data mscan.overlap_period_final_test;
+   set mscan.overlap_period_final;
+   by enrolid;
+   retain prev_overlap_end;
+
+   /* Calculate the difference only if it's not the first enrolid */
+   if not first.enrolid then do;
+      diff = overlap_start - prev_overlap_end;
+      /* Exclude records where the difference is greater than 30 days */
+      if diff > 30 then delete;
+   end;
+
+   /* Update the prev_overlap_end for the next iteration */
+   prev_overlap_end = overlap_end;
+   
+   /* Reset the prev_overlap_end for the first row of the next enrolid */
+   if first.enrolid then prev_overlap_end = overlap_end;
+
+   /* Keep the variable from being output to the new dataset */
+   drop prev_overlap_end diff;
+run;
+
+proc sql noprint;
+   /* Create a new table with max_overlap_end for each enrolid */
+   create table max_overlap_end as
+   select enrolid, max(overlap_end) as max_overlap_end
+   from mscan.overlap_period_final_test
+   group by enrolid;
+quit;
+
+data mscan.overlap_period_final_comb;
+   set mscan.overlap_period_final_test; /* Replace with your actual dataset name */
+   
+   /* Extract the first letter from each variable */
+   first_letter_doac = substr(doac_name, 1, 1);
+   first_letter_statin = substr(statin_name, 1, 1);
+   
+   /* Concatenate the two letters together */
+   combination = cats(first_letter_doac, first_letter_statin);
+run;
+data mscan.overlap_period_final_comb;
+    set mscan.overlap_period_final_comb;
+    if first_letter_statin in ('A', 'S', 'L') then
+        interacting = 1;
+    else
+        interacting = 0;
+run;
+
+data mscan.analytical_cohort;
+   merge mscan.analytical_cohort(in=a)
+         max_overlap_end(in=b);
+   by enrolid;
+
+   /* Step 4: Create the new variable discontinuation */
+   if b then discontinuation = max_overlap_end;
+    keep enrolid day0 sex discontinuation;
+run;
+
+
+data mscan.overlap_period_final_comb;
+   set mscan.overlap_period_final_comb;
+   by enrolid;
+
+   /* Retain the previous combination and change_start */
+   retain prev_comb change_start change_flag;
+
+   /* Initialize for the first row of each enrolid */
+   if first.enrolid then do;
+      prev_comb = combination;
+      change_start = .; /* Reset change_start for each new enrolid */
+      change_flag = 0; /* Reset change_flag for each new enrolid */
+   end;
+
+   /* Detect the first change in combination */
+   else if combination ne prev_comb and change_flag = 0 then do;
+      change_start = overlap_start; /* Record the overlap_start at first change */
+      change_flag = 1; /* Set the flag so no further changes are recorded */
+   end;
+
+   /* Update the prev_comb for the next iteration */
+   prev_comb = combination;
+
+   /* Optional: Create a flag variable to indicate an enrolid with changes */
+   if last.enrolid and change_flag then change_detected = 1;
+   else change_detected = 0;
+
+   /* Keep only the necessary variables in the new dataset */
+   drop prev_comb change_flag;
+run;
+
+data mscan.overlap_period_final_comb;
+   set mscan.overlap_period_final_comb;
+    keep enrolid first_letter_doac first_letter_statin day0 overlap_start overlap_end combination interacting change_start change_detected;
+run;
+
+/*get age*/
+data enrolid_first_dobyr;
+    set mscan.all_enrollment;
+    by enrolid;
+    if first.enrolid;
+    keep enrolid dobyr;
+run;
+
+proc sql;
+    create table mscan.analytical_cohort as
+    select a.*, b.dobyr
+    from mscan.analytical_cohort as a
+    left join enrolid_first_dobyr as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data mscan.analytical_cohort;
+    set mscan.analytical_cohort;
+    if not missing(day0) and not missing(dobyr) then do;
+        age = year(day0) - dobyr;
+    end;
+run;
+
+/*get doac + statin + combination*/
+data enrolid_d_s_comb;
+    set mscan.overlap_period_final_comb;
+    by enrolid;
+    if first.enrolid;
+    keep enrolid first_letter_doac first_letter_statin combination;
+run;
+
+proc sql;
+    create table mscan.analytical_cohort as
+    select a.*, b.first_letter_doac, b.first_letter_statin, b.combination
+    from mscan.analytical_cohort as a
+    left join enrolid_d_s_comb as b
+    on a.enrolid = b.enrolid;
+quit;
+
+/*add switching indicator and switch date to analytical cohort*/
+proc sql;
+    create table mscan.enrolid_change_start as
+    select a.enrolid, min(b.change_start) as switch_date, b.change_detected as switch_indicator
+    from mscan.analytical_cohort as a
+    left join mscan.overlap_period_final_comb as b
+    on a.enrolid = b.enrolid
+    where b.change_detected = 1
+    group by a.enrolid;
+quit;
+
+proc sql;
+    create table mscan.analytical_cohort as
+    select a.*, b.switch_date, b.switch_indicator
+    from mscan.analytical_cohort as a
+    left join mscan.enrolid_change_start as b
+    on a.enrolid = b.enrolid;
+quit;
+

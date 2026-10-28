@@ -1,0 +1,150 @@
+/*get a list of unique enrolid and day0* called unique_enrolid_day0, add which drug started first here*/
+proc sort data=mscan.overlap_period_3;
+    by enrolid day0;
+run;
+data mscan.unique_enrolid_day0;
+    set mscan.overlap_period_3;
+    by enrolid;
+    if first.enrolid;
+    keep enrolid day0;
+run;
+
+
+proc sql;
+    create table mscan.matched_doac_claims as
+    select * from mscan.common_doac
+    where enrolid in (select enrolid from mscan.unique_enrolid_day0);
+Quit;
+
+
+proc sql;
+    create table mscan.matched_doac_claims_with_day0 as
+    select mdc.*, usc.day0
+    from mscan.matched_doac_claims mdc
+    left join mscan.unique_enrolid_day0 usc
+    on mdc.enrolid = usc.enrolid;
+quit;
+
+/* Sort the matched_doac_claims_with_day0 dataset by enrolid */
+proc sort data=mscan.matched_doac_claims_with_day0;
+  by enrolid;
+run;
+
+data mscan.matched_doac_claims_flagged;
+  set mscan.matched_doac_claims_with_day0;
+
+  /* Initialize a flag variable */
+  first_drug = ' ';
+
+  /* Check if there is a row where svcdate equals day0 for the same enrolid */
+  if svcdate_doac = day0 then do;
+    first_drug = 'D';
+  end;
+
+  drop day0;
+run;
+
+proc sql;
+    create table mscan.enrolid_list_with_first_drug as
+    select distinct enrolid
+    from mscan.matched_doac_claims_flagged
+    where first_drug = 'D';
+quit;
+
+
+
+proc sql;
+    create table mscan.merged_data as
+    select a.*, b.enrolid as match_enrolid
+    from mscan.unique_enrolid_day0 a
+    left join mscan.enrolid_list_with_first_drug b
+    on a.enrolid = b.enrolid;
+quit;
+
+/* Assign 'D' to first_drug for matched records */
+data mscan.unique_enrolid_day0_2;
+    set mscan.merged_data;
+    if match_enrolid ne . then first_drug = 'D';
+    drop match_enrolid;
+run;
+
+/* Delete the intermediate dataset */
+proc datasets library = mscan nolist;
+    delete merged_data;
+Quit;
+
+
+/* Select Matching Statin Claims */
+proc sql;
+    create table mscan.matched_statin_claims as
+    select * from mscan.common_statin
+    where enrolid in (select enrolid from mscan.unique_enrolid_day0);
+quit;
+
+/* Merge Claims with Day0 */
+proc sql;
+    create table mscan.matched_statin_claims_with_day0 as
+    select msc.*, usc.day0
+    from mscan.matched_statin_claims msc
+    left join mscan.unique_enrolid_day0 usc
+    on msc.enrolid = usc.enrolid;
+quit;
+
+/* Sort by enrolid */
+proc sort data=mscan.matched_statin_claims_with_day0;
+  by enrolid;
+run;
+
+/* Flagging First Statin */
+data mscan.matched_statin_claims_flagged;
+  set mscan.matched_statin_claims_with_day0;
+
+  first_drug = ' ';
+  if svcdate_statin = day0 then do;
+    first_drug = 'S';
+  end;
+  drop day0;
+run;
+
+/* Create enrolid List with First Statin */
+proc sql;
+    create table mscan.enrolid_list_with_first_statin as
+    select distinct enrolid
+    from mscan.matched_statin_claims_flagged
+    where first_drug = 'S';
+quit;
+
+/* Merge Cohort with enrolid List */
+proc sql;
+    create table mscan.merged_data as
+    select a.*, b.enrolid as match_enrolid
+    from mscan.unique_enrolid_day0_2 a
+    left join mscan.enrolid_list_with_first_statin b
+    on a.enrolid = b.enrolid;
+quit;
+
+/* Update First Statin in Cohort */
+data mscan.unique_enrolid_day0_3;
+    set mscan.merged_data;
+    if match_enrolid ne . then first_drug_S = 'S';
+    drop match_enrolid;
+run;
+
+/* Delete the intermediate dataset */
+proc datasets library = mscan nolist;
+    delete merged_data;
+quit;
+
+data mscan.unique_enrolid_day0_4;
+    set mscan.unique_enrolid_day0_3;
+
+    /* Initialize first_drug_final */
+    first_drug_final = ' ';
+
+    /* Assign B, D, or S to first_drug_final based on the conditions */
+    if first_drug = 'D' and first_drug_S = 'S' then first_drug_final = 'B';
+    else if first_drug = 'D' and first_drug_S = ' ' then first_drug_final = 'S';
+    else if first_drug = ' ' and first_drug_S = 'S' then first_drug_final = 'D';
+Drop first_drug first_drug_S;
+Run;
+

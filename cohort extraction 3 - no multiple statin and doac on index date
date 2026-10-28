@@ -1,0 +1,57 @@
+data mscan.common_doac;
+    set mscan.common_doac;
+    doac_name = substr(doac_name, 1, 1);
+run;
+
+data mscan.common_statin;
+    set mscan.common_statin;
+    statin_name = substr(statin_name, 1, 1);
+run;
+
+/*exclude multiple doacs on index date*/
+proc sql noprint;
+    create table temp_flagged as
+    select a.enrolid
+    from mscan.unique_enrolid_day0 as a
+    inner join mscan.common_doac as b
+    on a.enrolid = b.enrolid
+    where a.day0 between b.svcdate_doac and b.enddate_doac
+    group by a.enrolid
+    having count(distinct b.doac_name) > 1;
+quit;
+
+
+proc sql noprint;
+    create table mscan.no_multiple_doac as
+    select *
+    from mscan.unique_enrolid_day0
+    where enrolid not in (select enrolid from temp_flagged);
+quit;
+
+proc datasets library=work nolist nodetails;
+    delete temp_flagged;
+quit;
+
+proc sql noprint;
+    create table temp_flagged as
+    select a.enrolid
+    from mscan.no_multiple_doac as a
+    inner join mscan.common_statin as b
+    on a.enrolid = b.enrolid
+    where a.day0 between b.svcdate_statin and b.enddate_statin
+    group by a.enrolid
+    having count(distinct b.statin_name) > 1;
+quit;
+
+
+proc sql noprint;
+    create table mscan.no_multiple_statin as
+    select *
+    from mscan.no_multiple_doac
+    where enrolid not in (select enrolid from temp_flagged);
+quit;
+
+proc datasets library=work nolist nodetails;
+    delete temp_flagged;
+quit;
+

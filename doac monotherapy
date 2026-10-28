@@ -1,0 +1,156 @@
+data mscan.all_doac_claims2;
+    set 
+	      mscan.all_doac_2010 (in=in1)
+        mscan.all_doac_claims(in=in2);
+    if enrolid ne .;
+run;
+
+/*find common enrolid among all_doac_claims and all_statin*/
+proc sql;
+    create table mscan.common_unique_enrolids as
+    select distinct a.enrolid
+    from mscan.all_doac_claims2 as a, mscan.all_statin as b
+    where a.enrolid = b.enrolid;
+quit;
+
+/*use common enrolid to extract doac and statin claims*/
+Proc sql;
+	Create table mscan.common_doac as
+	Select * from mscan.all_doac_claims2 where enrolid in (select enrolid from mscan.common_unique_enrolids);
+Quit;
+Proc sql;
+	Create table mscan.common_statin as
+	Select * from mscan.all_statin where enrolid in (select enrolid from mscan.common_unique_enrolids);
+Quit;
+
+/*add drug name to common_doac and common_statin*/
+proc sort data=mscan.common_doac;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_doac;
+    by ndcnum;
+run;
+data mscan.common_doac;
+    merge mscan.common_doac (in=a)
+          mscan.ndc_doac (in=b keep=ndcnum thrdtds rename=(thrdtds=drugname));
+    by ndcnum;
+    if a;
+Run;
+
+proc sort data=mscan.common_statin ;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_statin;
+    by ndcnum;
+run;
+data mscan.common_statin;
+    merge mscan.common_statin (in=a)
+          mscan.ndc_statin (in=b keep=ndcnum thrdtds rename=(thrdtds=drugname));
+    by ndcnum;
+    if a;
+Run;
+
+/*add end date for each drug dispensing*/
+Data mscan.common_statin;
+    Set mscan.common_statin;
+    Enddate = svcdate + daysupp;
+    Format enddate mmddyy10.;
+Run;
+
+Data mscan.common_doac;
+    Set mscan.common_doac;
+    Enddate = svcdate + daysupp;
+    Format enddate mmddyy10.;
+Run;
+
+/*delete those with days supply <= 0*/
+Data mscan.common_statin;
+    Set mscan.common_statin;
+    If daysupp > 0;
+Run;
+
+Data mscan.common_doac;
+    Set mscan.common_doac;
+    If 0 < daysupp < 300;
+Run;
+
+data _null_;
+    set mscan.doac_refills_within_year   nobs=nobs_var;
+    call symput('obs_count', nobs_var);
+    stop;
+run;
+
+proc sql noprint;
+    select count(distinct enrolid) into :unique_patients
+    from mscan.doac_refills_within_year  ;
+quit;
+
+%put Number of Observations: &obs_count;
+%put Number of Unique Patients (enrolid): &unique_patients;
+
+
+proc sql;
+   create table mscan.doac_refills_within_year as
+   select a.enrolid, b.daysupp, b.drugname, b.svcdate
+   from mscan.analytical_cohort as a
+   inner join mscan.common_doac as b
+   on a.enrolid = b.enrolid
+   where (a.day0 - 365) <= b.svcdate < a.day0
+   and upcase(substr(b.drugname, 1, 1)) = a.first_letter_doac;
+quit;
+/* Sum up daysupp for each enrolid */
+proc sql;
+   create table mscan.sum_daysupp_per_enrolid as
+   select enrolid, sum(daysupp) as total_daysupp
+   from mscan.doac_refills_within_year
+   group by enrolid;
+quit;
+
+data mscan.analytical_cohort;
+   merge mscan.analytical_cohort(in=a)
+         mscan.sum_daysupp_per_enrolid(in=b);
+         by enrolid;
+   if a and b then daysuppsum = total_daysupp; /* Case with matching enrolid */
+   if a; /* Ensures we're only outputting records from the analytical_cohort dataset */
+run;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+proc sql;
+    create table work.earliest_svcdate as 
+    select a.enrolid, 
+           min(b.svcdate) as earliest_svcdate
+    from mscan.analytical_cohort as a
+    left join mscan.common_doac as b
+    on a.enrolid = b.enrolid
+    and a.first_letter_doac = upcase(substr(b.drugname, 1, 1))
+    group by a.enrolid;
+quit;
+
+
+
+
+
+data mscan.analytical_cohort;
+    merge mscan.analytical_cohort(in=a) work.earliest_svcdate(in=b);
+    by enrolid;
+    if a;
+run;
+
+data mscan.analytical_cohort;
+    set mscan.analytical_cohort;
+    doac_mon=day0-earliest_svcdate;
+run;
+

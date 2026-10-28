@@ -1,0 +1,971 @@
+///// getting all drug files /////
+proc sql;
+    create table mscan.comedication2010 as
+    select enrolid, svcdate, ndcnum from source.ccaed103
+    where enrolid in (select enrolid from mscan.analytical_cohort);
+quit;
+
+proc sql;
+    create table mscan.comedication2011 as
+    select enrolid, svcdate, ndcnum from source.ccaed112
+    where enrolid in (select enrolid from mscan.analytical_cohort);
+quit;
+
+proc sql;
+    create table mscan.comedication2012 as
+    select enrolid, svcdate, ndcnum from source.ccaed121
+    where enrolid in (select enrolid from mscan.analytical_cohort);
+quit;
+
+proc sql;
+    create table mscan.comedication2013 as
+    select enrolid, svcdate, ndcnum from source.ccaed131
+    where enrolid in (select enrolid from mscan.analytical_cohort);
+quit;
+
+proc sql;
+    create table mscan.comedication2014 as
+    select enrolid, svcdate, ndcnum from source.ccaed141
+    where enrolid in (select enrolid from mscan.analytical_cohort);
+quit;
+
+
+proc sql;
+    create table mscan.comedication2015 as
+    select enrolid, svcdate, ndcnum from source.ccaed151
+    where enrolid in (select enrolid from mscan.analytical_cohort);
+quit;
+
+proc sql;
+    create table mscan.comedication2016 as
+    select enrolid, svcdate, ndcnum from source.ccaed161
+    where enrolid in (select enrolid from mscan.analytical_cohort);
+quit;
+
+proc sql;
+    create table mscan.comedication2017 as
+    select enrolid, svcdate, ndcnum from source.ccaed171
+    where enrolid in (select enrolid from mscan.analytical_cohort);
+quit;
+
+proc sql;
+    create table mscan.comedication2018 as
+    select enrolid, svcdate, ndcnum from source.ccaed181
+    where enrolid in (select enrolid from mscan.analytical_cohort);
+quit;
+
+proc sql;
+    create table mscan.comedication2019 as
+    select enrolid, svcdate, ndcnum from source.ccaed192
+    where enrolid in (select enrolid from mscan.analytical_cohort);
+quit;
+/////////////////////
+
+
+Data mscan.comedication;
+Set mscan.comedication2010 mscan.comedication2011 mscan.comedication2012 mscan.comedication2013 mscan.comedication2014 mscan.comedication2015 mscan.comedication2016 mscan.comedication2017 
+Mscan.comedication2018  mscan.comedication2019;
+run;
+
+////getting all co-medications 3 months prior to day0 or within the concomitant period/////
+proc sql;
+    create table mscan.comedication_final as
+    select a.enrolid, a.day0, a.censor_date, b.svcdate, b.ndcnum
+    from mscan.analytical_cohort as a
+    left join mscan.comedication as b
+    on a.enrolid = b.enrolid
+    where (a.day0-90) <= b.svcdate < a.censor_date;
+    /*where (0 <= (a.day0 - b.svcdate) <= 90) or (a.day0 <= b.svcdate < a.censor_date);*/
+
+quit;
+
+
+
+
+
+/*ndc num for all co-medications*/
+data mscan.ndc_acei;
+set source.redbook_2010 source.redbook_2011 source.redbook_2012 source.redbook_2013 source.redbook_2014 source.redbook_2015 source.redbook_2017 source.redbook2018 source.redbook_2019 source.redbook_2020;
+if lowcase(THRCLDS) in:('benazepril', 'captopril', 'cilazapril', 'enalapril', 'enalaprilat', 'fosinopril', 'lisinopril', 'moexipril', 'perindopril', 'quinapril', 'ramipril', 'trandolapril', 'spirapril', 'temocapril', 'zofenopril', 'imidapril', 'delapril') or 
+lowcase(THRGRDS) in:('benazepril', 'captopril', 'cilazapril', 'enalapril', 'enalaprilat', 'fosinopril', 'lisinopril', 'moexipril', 'perindopril', 'quinapril', 'ramipril', 'trandolapril', 'spirapril', 'temocapril', 'zofenopril', 'imidapril', 'delapril') or
+lowcase(PRODNME) in:('benazepril', 'captopril', 'cilazapril', 'enalapril', 'enalaprilat', 'fosinopril', 'lisinopril', 'moexipril', 'perindopril', 'quinapril', 'ramipril', 'trandolapril', 'spirapril', 'temocapril', 'zofenopril', 'imidapril', 'delapril') or
+lowcase(GENNME) in:('benazepril', 'captopril', 'cilazapril', 'enalapril', 'enalaprilat', 'fosinopril', 'lisinopril', 'moexipril', 'perindopril', 'quinapril', 'ramipril', 'trandolapril', 'spirapril', 'temocapril', 'zofenopril', 'imidapril', 'delapril');
+run;
+
+data mscan.ndc_arb;
+    set source.redbook_2010 source.redbook_2011 source.redbook_2012 source.redbook_2013 source.redbook_2014 source.redbook_2015 source.redbook_2017 source.redbook2018 source.redbook_2019 source.redbook_2020;
+    if lowcase(THRCLDS) in:('valsartan', 'olmesartan', 'eprosartan', 'telmisartan', 'irbesartan', 'tasosartan', 'azilsartan', 'fimasartan', 'candesartan', 'losartan') or 
+       lowcase(THRGRDS) in:('valsartan', 'olmesartan', 'eprosartan', 'telmisartan', 'irbesartan', 'tasosartan', 'azilsartan', 'fimasartan', 'candesartan', 'losartan') or
+       lowcase(PRODNME) in:('valsartan', 'olmesartan', 'eprosartan', 'telmisartan', 'irbesartan', 'tasosartan', 'azilsartan', 'fimasartan', 'candesartan', 'losartan') or
+       lowcase(GENNME) in:('valsartan', 'olmesartan', 'eprosartan', 'telmisartan', 'irbesartan', 'tasosartan', 'azilsartan', 'fimasartan', 'candesartan', 'losartan');
+run;
+
+
+
+data mscan.ndc_av;
+    set source.redbook_2010 source.redbook_2011 source.redbook_2012 source.redbook_2013 source.redbook_2014 source.redbook_2015 source.redbook_2017 source.redbook2018 source.redbook_2019 source.redbook_2020;
+
+    if lowcase(THRCLDS) in:('nitroglycerin', 'glyceryl trinitrate', 'isosorbide dinitrate', 'isosorbide mononitrate', 'erythrityl tetranitrate', 'pentaerythritol tetranitrate', 'nicorandil', 'molsidomine', 'trapidil', 'imolamine', 'hexobendine') or 
+       lowcase(THRGRDS) in:('nitroglycerin', 'glyceryl trinitrate', 'isosorbide dinitrate', 'isosorbide mononitrate', 'erythrityl tetranitrate', 'pentaerythritol tetranitrate', 'nicorandil', 'molsidomine', 'trapidil', 'imolamine', 'hexobendine') or
+       lowcase(PRODNME) in:('nitroglycerin', 'glyceryl trinitrate', 'isosorbide dinitrate', 'isosorbide mononitrate', 'erythrityl tetranitrate', 'pentaerythritol tetranitrate', 'nicorandil', 'molsidomine', 'trapidil', 'imolamine', 'hexobendine') or
+       lowcase(GENNME) in:('nitroglycerin', 'glyceryl trinitrate', 'isosorbide dinitrate', 'isosorbide mononitrate', 'erythrityl tetranitrate', 'pentaerythritol tetranitrate', 'nicorandil', 'molsidomine', 'trapidil', 'imolamine', 'hexobendine');
+
+run;
+
+data mscan.ndc_antiarrhythmics;
+    set source.redbook_2010 source.redbook_2011 source.redbook_2012 source.redbook_2013 source.redbook_2014 source.redbook_2015 source.redbook_2017 source.redbook2018 source.redbook_2019 source.redbook_2020;
+
+    if lowcase(THRCLDS) in:('quinidine', 'procainamide', 'disopyramide', 'sparteine', 'ajmaline', 'prajmaline', 'lorajmine', 'hydroquinidine', 'lidocaine', 'mexiletine', 'tocainide', 'aprindine', 'propafenone', 'flecainide', 'lorcainide', 'encainide', 'ethacizine', 'amiodarone', 
+'bretylium', 'bunaftine', 'dofetilide', 'ibutilide', 'tedisamil', 'dronedarone', 'moracizine', 'cibenzoline', 'vernakalant')
+       or
+       lowcase(THRGRDS) in:('quinidine', 'procainamide', 'disopyramide', 'sparteine', 'ajmaline', 'prajmaline', 'lorajmine', 'hydroquinidine', 'lidocaine', 'mexiletine', 'tocainide', 'aprindine', 'propafenone', 'flecainide', 'lorcainide', 'encainide', 'ethacizine', 'amiodarone', 
+'bretylium', 'bunaftine', 'dofetilide', 'ibutilide', 'tedisamil', 'dronedarone', 'moracizine', 'cibenzoline', 'vernakalant')
+       or
+       lowcase(PRODNME) in:('quinidine', 'procainamide', 'disopyramide', 'sparteine', 'ajmaline', 'prajmaline', 'lorajmine', 'hydroquinidine', 'lidocaine', 'mexiletine', 'tocainide', 'aprindine', 'propafenone', 'flecainide', 'lorcainide', 'encainide', 'ethacizine', 'amiodarone', 
+'bretylium', 'bunaftine', 'dofetilide', 'ibutilide', 'tedisamil', 'dronedarone', 'moracizine', 'cibenzoline', 'vernakalant')
+       or
+       lowcase(GENNME) in:('quinidine', 'procainamide', 'disopyramide', 'sparteine', 'ajmaline', 'prajmaline', 'lorajmine', 'hydroquinidine', 'lidocaine', 'mexiletine', 'tocainide', 'aprindine', 'propafenone', 'flecainide', 'lorcainide', 'encainide', 'ethacizine', 'amiodarone', 
+'bretylium', 'bunaftine', 'dofetilide', 'ibutilide', 'tedisamil', 'dronedarone', 'moracizine', 'cibenzoline', 'vernakalant');
+
+run;
+
+data mscan.ndc_antiplatelets;
+    set source.redbook_2010 source.redbook_2011 source.redbook_2012 source.redbook_2013 source.redbook_2014 source.redbook_2015 source.redbook_2017 source.redbook2018 source.redbook_2019 source.redbook_2020;
+
+    if lowcase(THRCLDS) in:('ditazole', 'cloricromen', 'picotamide', 'clopidogrel', 'ticlopidine', 'dipyridamole', 'carbasalate calcium', 'epoprostenol', 'indobufen', 'iloprost', 'abciximab', 'aloxiprin', 'eptifibatide', 'tirofiban', 'triflusal', 'beraprost', 'treprostinil', 
+'prasugrel', 'cilostazol', 'ticagrelor', 'cangrelor', 'vorapaxar', 'selexipag')
+       or
+       lowcase(THRGRDS) in:('ditazole', 'cloricromen', 'picotamide', 'clopidogrel', 'ticlopidine', 'dipyridamole', 'carbasalate calcium', 'epoprostenol', 'indobufen', 'iloprost', 'abciximab', 'aloxiprin', 'eptifibatide', 'tirofiban', 'triflusal', 'beraprost', 'treprostinil', 'prasugrel', 
+'cilostazol', 'ticagrelor', 'cangrelor', 'vorapaxar', 'selexipag')
+       or
+       lowcase(PRODNME) in:('ditazole', 'cloricromen', 'picotamide', 'clopidogrel', 'ticlopidine', 'dipyridamole', 'carbasalate calcium', 'epoprostenol', 'indobufen', 'iloprost', 'abciximab', 'aloxiprin', 'eptifibatide', 'tirofiban', 'triflusal', 'beraprost', 'treprostinil', 'prasugrel',
+'cilostazol', 'ticagrelor', 'cangrelor', 'vorapaxar', 'selexipag')
+       or
+       lowcase(GENNME) in:('ditazole', 'cloricromen', 'picotamide', 'clopidogrel', 'ticlopidine', 'dipyridamole', 'carbasalate calcium', 'epoprostenol', 'indobufen', 'iloprost', 'abciximab', 'aloxiprin', 'eptifibatide', 'tirofiban', 'triflusal', 'beraprost', 'treprostinil', 'prasugrel', 'cilostazol', 
+'ticagrelor', 'cangrelor', 'vorapaxar', 'selexipag');
+
+run;
+
+data mscan.ndc_aspirin;
+    set source.redbook_2010 source.redbook_2011 source.redbook_2012 source.redbook_2013 source.redbook_2014 source.redbook_2015 source.redbook_2017 source.redbook2018 source.redbook_2019 source.redbook_2020;
+
+    if lowcase(THRCLDS) in:('aspirin', 'acetylsalicylic acid')
+       or
+       lowcase(THRGRDS) in:('aspirin', 'acetylsalicylic acid')
+       or
+       lowcase(PRODNME) in:('aspirin', 'acetylsalicylic acid')
+       or
+       lowcase(GENNME) in:('aspirin', 'acetylsalicylic acid');
+
+run;
+
+data mscan.ndc_beta_blockers;
+    set source.redbook_2010 source.redbook_2011 source.redbook_2012 source.redbook_2013 source.redbook_2014 source.redbook_2015 source.redbook_2017 source.redbook2018 source.redbook_2019 source.redbook_2020;
+
+    if lowcase(THRCLDS) in:('alprenolol', 'oxprenolol', 'pindolol', 'propranolol', 'timolol', 'sotalol', 'nadolol', 'mepindolol', 'carteolol', 'tertatolol', 'bopindolol', 'bupranolol', 'penbutolol', 'cloranolol', 'practolol', 'metoprolol', 'atenolol', 'acebutolol', 'betaxolol', 'bevantolol', 'bisoprolol', 
+'celiprolol', 'esmolol', 'epanolol', 's-atenolol', 'nebivolol', 'talinolol', 'landiolol', 'labetalol', 'carvedilol')
+       or
+       lowcase(THRGRDS) in:('alprenolol', 'oxprenolol', 'pindolol', 'propranolol', 'timolol', 'sotalol', 'nadolol', 'mepindolol', 'carteolol', 'tertatolol', 'bopindolol', 'bupranolol', 'penbutolol', 'cloranolol', 'practolol', 'metoprolol', 'atenolol', 'acebutolol', 'betaxolol', 'bevantolol', 'bisoprolol', 
+'celiprolol', 'esmolol', 'epanolol', 's-atenolol', 'nebivolol', 'talinolol', 'landiolol', 'labetalol', 'carvedilol')
+       or
+       lowcase(PRODNME) in:('alprenolol', 'oxprenolol', 'pindolol', 'propranolol', 'timolol', 'sotalol', 'nadolol', 'mepindolol', 'carteolol', 'tertatolol', 'bopindolol', 'bupranolol', 'penbutolol', 'cloranolol', 'practolol', 'metoprolol', 'atenolol', 'acebutolol', 'betaxolol', 'bevantolol', 'bisoprolol', 
+'celiprolol', 'esmolol', 'epanolol', 's-atenolol', 'nebivolol', 'talinolol', 'landiolol', 'labetalol', 'carvedilol')
+       or
+       lowcase(GENNME) in:('alprenolol', 'oxprenolol', 'pindolol', 'propranolol', 'timolol', 'sotalol', 'nadolol', 'mepindolol', 'carteolol', 'tertatolol', 'bopindolol', 'bupranolol', 'penbutolol', 'cloranolol', 'practolol', 'metoprolol', 'atenolol', 'acebutolol', 'betaxolol', 'bevantolol', 'bisoprolol', 
+'celiprolol', 'esmolol', 'epanolol', 's-atenolol', 'nebivolol', 'talinolol', 'landiolol', 'labetalol', 'carvedilol');
+
+run;
+
+data mscan.ndc_calcium_channel_blockers;
+    set source.redbook_2010 source.redbook_2011 source.redbook_2012 source.redbook_2013 source.redbook_2014 source.redbook_2015 source.redbook_2017 source.redbook2018 source.redbook_2019 source.redbook_2020;
+
+    if lowcase(THRCLDS) in:('amlodipine', 'felodipine', 'isradipine', 'nicardipine', 'nifedipine', 'nimodipine', 'nisoldipine', 'nitrendipine', 'lacidipine', 'nilvadipine', 'manidipine', 'barnidipine', 'lercanidipine', 'cilnidipine', 'benidipine', 'clevidipine', 'mibefradil', 'fendiline', 'bepridil', 'lidoflazine', 'perhexiline')
+       or
+       lowcase(THRGRDS) in:('amlodipine', 'felodipine', 'isradipine', 'nicardipine', 'nifedipine', 'nimodipine', 'nisoldipine', 'nitrendipine', 'lacidipine', 'nilvadipine', 'manidipine', 'barnidipine', 'lercanidipine', 'cilnidipine', 'benidipine', 'clevidipine', 'mibefradil', 'fendiline', 'bepridil', 'lidoflazine', 'perhexiline')
+       or
+       lowcase(PRODNME) in:('amlodipine', 'felodipine', 'isradipine', 'nicardipine', 'nifedipine', 'nimodipine', 'nisoldipine', 'nitrendipine', 'lacidipine', 'nilvadipine', 'manidipine', 'barnidipine', 'lercanidipine', 'cilnidipine', 'benidipine', 'clevidipine', 'mibefradil', 'fendiline', 'bepridil', 'lidoflazine', 'perhexiline')
+       or
+       lowcase(GENNME) in:('amlodipine', 'felodipine', 'isradipine', 'nicardipine', 'nifedipine', 'nimodipine', 'nisoldipine', 'nitrendipine', 'lacidipine', 'nilvadipine', 'manidipine', 'barnidipine', 'lercanidipine', 'cilnidipine', 'benidipine', 'clevidipine', 'mibefradil', 'fendiline', 'bepridil', 'lidoflazine', 'perhexiline');
+
+run;
+
+data mscan.ndc_diuretics;
+    set source.redbook_2010 source.redbook_2011 source.redbook_2012 source.redbook_2013 source.redbook_2014 source.redbook_2015 source.redbook_2017 source.redbook2018 source.redbook_2019 source.redbook_2020;
+
+    if lowcase(THRCLDS) in:('bendroflumethiazide', 'hydroflumethiazide', 'hydrochlorothiazide', 'chlorothiazide', 'polythiazide', 'trichlormethiazide', 'cyclopenthiazide', 'methyclothiazide', 'cyclothiazide', 'mebutizide', 'quinethazone', 'clopamide', 'chlortalidone', 'mefruside', 'clofenamide', 'metolazone', 'meticrane', 'xipamide', 'indapamide', 
+'clorexolone', 'fenquizone', 'mersalyl', 'theobromine', 'cicletanine', 'furosemide', 'bumetanide', 'piretanide', 'torasemide', 'etacrynic acid', 'tienilic acid', 'muzolimine', 'etozolin', 'spironolactone', 'potassium canrenoate', 'canrenone', 'eplerenone', 'amiloride', 'triamterene', 'tolvaptan', 'conivaptan')
+       or
+       lowcase(THRGRDS) in:('bendroflumethiazide', 'hydroflumethiazide', 'hydrochlorothiazide', 'chlorothiazide', 'polythiazide', 'trichlormethiazide', 'cyclopenthiazide', 'methyclothiazide', 'cyclothiazide', 'mebutizide', 'quinethazone', 'clopamide', 'chlortalidone', 'mefruside', 'clofenamide', 'metolazone', 'meticrane', 'xipamide', 'indapamide', 
+'clorexolone', 'fenquizone', 'mersalyl', 'theobromine', 'cicletanine', 'furosemide', 'bumetanide', 'piretanide', 'torasemide', 'etacrynic acid', 'tienilic acid', 'muzolimine', 'etozolin', 'spironolactone', 'potassium canrenoate', 'canrenone', 'eplerenone', 'amiloride', 'triamterene', 'tolvaptan', 'conivaptan')
+       or
+       lowcase(PRODNME) in:('bendroflumethiazide', 'hydroflumethiazide', 'hydrochlorothiazide', 'chlorothiazide', 'polythiazide', 'trichlormethiazide', 'cyclopenthiazide', 'methyclothiazide', 'cyclothiazide', 'mebutizide', 'quinethazone', 'clopamide', 'chlortalidone', 'mefruside', 'clofenamide', 'metolazone', 'meticrane', 'xipamide', 'indapamide', 
+'clorexolone', 'fenquizone', 'mersalyl', 'theobromine', 'cicletanine', 'furosemide', 'bumetanide', 'piretanide', 'torasemide', 'etacrynic acid', 'tienilic acid', 'muzolimine', 'etozolin', 'spironolactone', 'potassium canrenoate', 'canrenone', 'eplerenone', 'amiloride', 'triamterene', 'tolvaptan', 'conivaptan')
+       or
+       lowcase(GENNME) in:('bendroflumethiazide', 'hydroflumethiazide', 'hydrochlorothiazide', 'chlorothiazide', 'polythiazide', 'trichlormethiazide', 'cyclopenthiazide', 'methyclothiazide', 'cyclothiazide', 'mebutizide', 'quinethazone', 'clopamide', 'chlortalidone', 'mefruside', 'clofenamide', 'metolazone', 'meticrane', 'xipamide', 'indapamide', 
+'clorexolone', 'fenquizone', 'mersalyl', 'theobromine', 'cicletanine', 'furosemide', 'bumetanide', 'piretanide', 'torasemide', 'etacrynic acid', 'tienilic acid', 'muzolimine', 'etozolin', 'spironolactone', 'potassium canrenoate', 'canrenone', 'eplerenone', 'amiloride', 'triamterene', 'tolvaptan', 'conivaptan');
+
+run;
+
+data mscan.ndc_other_antihypertensives;
+    set source.redbook_2010 source.redbook_2011 source.redbook_2012 source.redbook_2013 source.redbook_2014 source.redbook_2015 source.redbook_2017 source.redbook2018 source.redbook_2019 source.redbook_2020;
+
+    if lowcase(THRCLDS) in:('rescinnamine', 'reserpine', 'deserpidine', 'rauwolfia alkaloids', 'rauwolfia alkaloids, whole root', 'combinations of rauwolfia alkaloids', 'methoserpidine', 'bietaserpine', 'methyldopa', 'clonidine', 'guanfacine', 'tolonidine', 'moxonidine', 'rilmenidine', 'trimetaphan', 'mecamylamine', 'prazosin', 'indoramin', 
+'trimazosin', 'doxazosin', 'urapidil', 'betanidine', 'guanethidine', 'guanoxan', 'debrisoquine', 'guanoclor', 'guanazodine', 'guanoxabenz', 'diazoxide', 'dihydralazine', 'hydralazine', 'endralazine', 'cadralazine', 'minoxidil', 'nitroprusside', 'pinacidil', 'veratrum', 'metirosine', 'pargyline', 'ketanserin', 'bosentan', 'ambrisentan', 'sitaxentan', 
+'macitentan', 'riociguat', 'ambrisentan and tadalafil')
+       or
+       lowcase(THRGRDS) in:('rescinnamine', 'reserpine', 'deserpidine', 'rauwolfia alkaloids', 'rauwolfia alkaloids, whole root', 'combinations of rauwolfia alkaloids', 'methoserpidine', 'bietaserpine', 'methyldopa', 'clonidine', 'guanfacine', 'tolonidine', 'moxonidine', 'rilmenidine', 'trimetaphan', 'mecamylamine', 'prazosin', 'indoramin', 'trimazosin', 
+'doxazosin', 'urapidil', 'betanidine', 'guanethidine', 
+'guanoxan', 'debrisoquine', 'guanoclor', 'guanazodine', 'guanoxabenz', 'diazoxide', 'dihydralazine', 'hydralazine', 'endralazine', 'cadralazine', 'minoxidil', 'nitroprusside', 'pinacidil', 'veratrum', 'metirosine', 'pargyline', 'ketanserin', 'bosentan', 'ambrisentan', 'sitaxentan', 'macitentan', 'riociguat', 'ambrisentan and tadalafil')
+       or
+       lowcase(PRODNME) in:('rescinnamine', 'reserpine', 'deserpidine', 'rauwolfia alkaloids', 'rauwolfia alkaloids, whole root', 'combinations of rauwolfia alkaloids', 'methoserpidine', 'bietaserpine', 'methyldopa', 'clonidine', 'guanfacine', 'tolonidine', 'moxonidine', 'rilmenidine', 'trimetaphan', 'mecamylamine', 'prazosin', 'indoramin', 'trimazosin', 
+'doxazosin', 'urapidil', 'betanidine', 'guanethidine', 
+'guanoxan', 'debrisoquine', 'guanoclor', 'guanazodine', 'guanoxabenz', 'diazoxide', 'dihydralazine', 'hydralazine', 'endralazine', 'cadralazine', 'minoxidil', 'nitroprusside', 'pinacidil', 'veratrum', 'metirosine', 'pargyline', 'ketanserin', 'bosentan', 'ambrisentan', 'sitaxentan', 'macitentan', 'riociguat', 'ambrisentan and tadalafil')
+       or
+       lowcase(GENNME) in:('rescinnamine', 'reserpine', 'deserpidine', 'rauwolfia alkaloids', 'rauwolfia alkaloids, whole root', 'combinations of rauwolfia alkaloids', 'methoserpidine', 'bietaserpine', 'methyldopa', 'clonidine', 'guanfacine', 'tolonidine', 'moxonidine', 'rilmenidine', 'trimetaphan', 'mecamylamine', 'prazosin', 'indoramin', 'trimazosin', 
+'doxazosin', 'urapidil', 'betanidine', 'guanethidine', 
+'guanoxan', 'debrisoquine', 'guanoclor', 'guanazodine', 'guanoxabenz', 'diazoxide', 'dihydralazine', 'hydralazine', 'endralazine', 'cadralazine', 'minoxidil', 'nitroprusside', 'pinacidil', 'veratrum', 'metirosine', 'pargyline', 'ketanserin', 'bosentan', 'ambrisentan', 'sitaxentan', 'macitentan', 'riociguat', 'ambrisentan and tadalafil');
+
+run;
+
+data mscan.ndc_diabetes_drugs;
+    set source.redbook_2010 source.redbook_2011 source.redbook_2012 source.redbook_2013 source.redbook_2014 source.redbook_2015 source.redbook_2017 source.redbook2018 source.redbook_2019 source.redbook_2020;
+
+    if lowcase(THRCLDS) in:('insulin', 'insulin lispro', 'insulin aspart', 'insulin glulisine', 'insulin degludec and insulin aspart', 'insulin glargine', 'insulin detemir', 'insulin degludec', 'insulin degludec and liraglutide', 'insulin glargine and lixisenatide', 'phenformin', 'metformin', 'buformin', 'glibenclamide', 'chlorpropamide', 'tolbutamide',
+'glibornuride', 'tolazamide', 'carbutamide', 'glipizide', 'gliquidone', 'gliclazide', 'metahexamide', 'glisoxepide', 'glimepiride', 'acetohexamide', 'glymidine', 'acarbose', 'miglitol', 'voglibose', 'troglitazone', 'rosiglitazone', 'pioglitazone', 'sitagliptin', 'vildagliptin', 'saxagliptin', 'alogliptin', 'linagliptin', 'gemigliptin', 'evogliptin', 
+'exenatide', 'liraglutide', 'lixisenatide', 'albiglutide', 'dulaglutide', 'semaglutide', 'dapagliflozin', 'canagliflozin', 'empagliflozin', 'ertugliflozin', 'ipragliflozin', 'sotagliflozin', 'repaglinide', 'nateglinide', 'pramlintide', 'benfluorex', 'mitiglinide')
+       or
+       lowcase(THRGRDS) in:('insulin', 'insulin lispro', 'insulin aspart', 'insulin glulisine', 'insulin degludec and insulin aspart', 'insulin glargine', 'insulin detemir', 'insulin degludec', 'insulin degludec and liraglutide', 'insulin glargine and lixisenatide', 'phenformin', 'metformin', 'buformin', 'glibenclamide', 'chlorpropamide', 'tolbutamide',
+'glibornuride', 'tolazamide', 'carbutamide', 'glipizide', 'gliquidone', 'gliclazide', 'metahexamide', 'glisoxepide', 'glimepiride', 'acetohexamide', 'glymidine', 'acarbose', 'miglitol', 'voglibose', 'troglitazone', 'rosiglitazone', 'pioglitazone', 'sitagliptin', 'vildagliptin', 'saxagliptin', 'alogliptin', 'linagliptin', 'gemigliptin', 'evogliptin', 
+'exenatide', 'liraglutide', 'lixisenatide', 'albiglutide', 'dulaglutide', 'semaglutide', 'dapagliflozin', 'canagliflozin', 'empagliflozin', 'ertugliflozin', 'ipragliflozin', 'sotagliflozin', 'repaglinide', 'nateglinide', 'pramlintide', 'benfluorex', 'mitiglinide')
+       or
+       lowcase(PRODNME) in:('insulin', 'insulin lispro', 'insulin aspart', 'insulin glulisine', 'insulin degludec and insulin aspart', 'insulin glargine', 'insulin detemir', 'insulin degludec', 'insulin degludec and liraglutide', 'insulin glargine and lixisenatide', 'phenformin', 'metformin', 'buformin', 'glibenclamide', 'chlorpropamide', 'tolbutamide',
+'glibornuride', 'tolazamide', 'carbutamide', 'glipizide', 'gliquidone', 'gliclazide', 'metahexamide', 'glisoxepide', 'glimepiride', 'acetohexamide', 'glymidine', 'acarbose', 'miglitol', 'voglibose', 'troglitazone', 'rosiglitazone', 'pioglitazone', 'sitagliptin', 'vildagliptin', 'saxagliptin', 'alogliptin', 'linagliptin', 'gemigliptin', 'evogliptin', 
+'exenatide', 'liraglutide', 'lixisenatide', 'albiglutide', 'dulaglutide', 'semaglutide', 'dapagliflozin', 'canagliflozin', 'empagliflozin', 'ertugliflozin', 'ipragliflozin', 'sotagliflozin', 'repaglinide', 'nateglinide', 'pramlintide', 'benfluorex', 'mitiglinide')
+       or
+       lowcase(GENNME) in:('insulin', 'insulin lispro', 'insulin aspart', 'insulin glulisine', 'insulin degludec and insulin aspart', 'insulin glargine', 'insulin detemir', 'insulin degludec', 'insulin degludec and liraglutide', 'insulin glargine and lixisenatide', 'phenformin', 'metformin', 'buformin', 'glibenclamide', 'chlorpropamide', 'tolbutamide',
+'glibornuride', 'tolazamide', 'carbutamide', 'glipizide', 'gliquidone', 'gliclazide', 'metahexamide', 'glisoxepide', 'glimepiride', 'acetohexamide', 'glymidine', 'acarbose', 'miglitol', 'voglibose', 'troglitazone', 'rosiglitazone', 'pioglitazone', 'sitagliptin', 'vildagliptin', 'saxagliptin', 'alogliptin', 'linagliptin', 'gemigliptin', 'evogliptin', 
+'exenatide', 'liraglutide', 'lixisenatide', 'albiglutide', 'dulaglutide', 'semaglutide', 'dapagliflozin', 'canagliflozin', 'empagliflozin', 'ertugliflozin', 'ipragliflozin', 'sotagliflozin', 'repaglinide', 'nateglinide', 'pramlintide', 'benfluorex', 'mitiglinide');
+
+run;
+
+data mscan.ndc_estrogens;
+    set source.redbook_2010 source.redbook_2011 source.redbook_2012 source.redbook_2013 source.redbook_2014 source.redbook_2015 source.redbook_2017 source.redbook2018 source.redbook_2019 source.redbook_2020;
+
+    if lowcase(THRCLDS) in:('ethinylestradiol', 'estradiol', 'estriol', 'chlorotrianisene', 'estrone', 'promestriene', 'conjugated estrogens', 'dienestrol', 'diethylstilbestrol', 'methallenestril', 'moxestrol', 'tibolone')
+       or
+       lowcase(THRGRDS) in:('ethinylestradiol', 'estradiol', 'estriol', 'chlorotrianisene', 'estrone', 'promestriene', 'conjugated estrogens', 'dienestrol', 'diethylstilbestrol', 'methallenestril', 'moxestrol', 'tibolone')
+       or
+       lowcase(PRODNME) in:('ethinylestradiol', 'estradiol', 'estriol', 'chlorotrianisene', 'estrone', 'promestriene', 'conjugated estrogens', 'dienestrol', 'diethylstilbestrol', 'methallenestril', 'moxestrol', 'tibolone')
+       or
+       lowcase(GENNME) in:('ethinylestradiol', 'estradiol', 'estriol', 'chlorotrianisene', 'estrone', 'promestriene', 'conjugated estrogens', 'dienestrol', 'diethylstilbestrol', 'methallenestril', 'moxestrol', 'tibolone');
+
+run;
+
+data mscan.ndc_progestins;
+    set source.redbook_2010 source.redbook_2011 source.redbook_2012 source.redbook_2013 source.redbook_2014 source.redbook_2015 source.redbook_2017 source.redbook2018 source.redbook_2019 source.redbook_2020;
+
+    if lowcase(THRCLDS) in:('gestonorone', 'medroxyprogesterone', 'hydroxyprogesterone', 'progesterone', 'dydrogesterone', 'megestrol', 'medrogestone', 'nomegestrol', 'demegestone', 'chlormadinone', 'promegestone', 'dienogest', 'allylestrenol', 'norethisterone', 'lynestrenol', 'ethisterone', 'etynodiol', 'methylestrenolone')
+       or
+       lowcase(THRGRDS) in:('gestonorone', 'medroxyprogesterone', 'hydroxyprogesterone', 'progesterone', 'dydrogesterone', 'megestrol', 'medrogestone', 'nomegestrol', 'demegestone', 'chlormadinone', 'promegestone', 'dienogest', 'allylestrenol', 'norethisterone', 'lynestrenol', 'ethisterone', 'etynodiol', 'methylestrenolone')
+       or
+       lowcase(PRODNME) in:('gestonorone', 'medroxyprogesterone', 'hydroxyprogesterone', 'progesterone', 'dydrogesterone', 'megestrol', 'medrogestone', 'nomegestrol', 'demegestone', 'chlormadinone', 'promegestone', 'dienogest', 'allylestrenol', 'norethisterone', 'lynestrenol', 'ethisterone', 'etynodiol', 'methylestrenolone')
+       or
+       lowcase(GENNME) in:('gestonorone', 'medroxyprogesterone', 'hydroxyprogesterone', 'progesterone', 'dydrogesterone', 'megestrol', 'medrogestone', 'nomegestrol', 'demegestone', 'chlormadinone', 'promegestone', 'dienogest', 'allylestrenol', 'norethisterone', 'lynestrenol', 'ethisterone', 'etynodiol', 'methylestrenolone');
+
+run;
+
+data mscan.ndc_heparin_lmwh;
+    set source.redbook_2010 source.redbook_2011 source.redbook_2012 source.redbook_2013 source.redbook_2014 source.redbook_2015 source.redbook_2017 source.redbook2018 source.redbook_2019 source.redbook_2020;
+
+    if lowcase(THRCLDS) in:('heparin', 'antithrombin III', 'dalteparin', 'enoxaparin', 'nadroparin', 'parnaparin', 'reviparin', 'danaparoid', 'tinzaparin', 'sulodexide', 'bemiparin')
+       or
+       lowcase(THRGRDS) in:('heparin', 'antithrombin III', 'dalteparin', 'enoxaparin', 'nadroparin', 'parnaparin', 'reviparin', 'danaparoid', 'tinzaparin', 'sulodexide', 'bemiparin')
+       or
+       lowcase(PRODNME) in:('heparin', 'antithrombin III', 'dalteparin', 'enoxaparin', 'nadroparin', 'parnaparin', 'reviparin', 'danaparoid', 'tinzaparin', 'sulodexide', 'bemiparin')
+       or
+       lowcase(GENNME) in:('heparin', 'antithrombin III', 'dalteparin', 'enoxaparin', 'nadroparin', 'parnaparin', 'reviparin', 'danaparoid', 'tinzaparin', 'sulodexide', 'bemiparin');
+
+run;
+
+data mscan.ndc_nsaids;
+    set source.redbook_2010 source.redbook_2011 source.redbook_2012 source.redbook_2013 source.redbook_2014 source.redbook_2015 source.redbook_2017 source.redbook2018 source.redbook_2019 source.redbook_2020;
+
+    if lowcase(THRCLDS) in:('phenylbutazone', 'mofebutazone', 'oxyphenbutazone', 'clofezone', 'kebuzone', 'indometacin', 'sulindac', 'tolmetin', 'zomepirac', 'diclofenac', 'alclofenac', 'bumadizone', 'etodolac', 'lonazolac', 'fentiazac', 'acemetacin', 'difenpiramide', 'oxametacin', 'proglumetacin', 
+'ketorolac', 'aceclofenac', 'bufexamac', 'piroxicam', 'tenoxicam', 'droxicam', 'lornoxicam', 'meloxicam', 'ibuprofen', 'naproxen', 'ketoprofen', 'fenoprofen', 'fenbufen', 'benoxaprofen', 'suprofen', 'pirprofen', 'flurbiprofen', 'indoprofen', 'tiaprofenic acid', 'oxaprozin', 'ibuproxam', 'dexibuprofen', 'flunoxaprofen', 'alminoprofen', 
+'dexketoprofen', 'naproxcinod', 'mefenamic acid', 'tolfenamic acid', 'flufenamic acid', 'meclofenamic acid', 'celecoxib', 'rofecoxib', 'valdecoxib', 'parecoxib', 'etoricoxib', 'lumiracoxib', 'polmacoxib', 'nabumetone', 'niflumic acid', 'azapropazone', 'glucosamine', 'benzydamine', 'glucosaminoglycan polysulfate', 'proquazone', 'orgotein', 
+'nimesulide', 'feprazone', 'diacerein', 'morniflumate', 'tenidap', 'oxaceprol', 'chondroitin sulfate')
+       or
+       lowcase(THRGRDS) in:('phenylbutazone', 'mofebutazone', 'oxyphenbutazone', 'clofezone', 'kebuzone', 'indometacin', 'sulindac', 'tolmetin', 'zomepirac', 'diclofenac', 'alclofenac', 'bumadizone', 'etodolac', 'lonazolac', 'fentiazac', 'acemetacin', 'difenpiramide', 'oxametacin', 'proglumetacin', 
+'ketorolac', 'aceclofenac', 'bufexamac', 'piroxicam', 'tenoxicam', 'droxicam', 'lornoxicam', 'meloxicam', 'ibuprofen', 'naproxen', 'ketoprofen', 'fenoprofen', 'fenbufen', 'benoxaprofen', 'suprofen', 'pirprofen', 'flurbiprofen', 'indoprofen', 'tiaprofenic acid', 'oxaprozin', 'ibuproxam', 'dexibuprofen', 'flunoxaprofen', 'alminoprofen', 
+'dexketoprofen', 'naproxcinod', 'mefenamic acid', 'tolfenamic acid', 'flufenamic acid', 'meclofenamic acid', 'celecoxib', 'rofecoxib', 'valdecoxib', 'parecoxib', 'etoricoxib', 'lumiracoxib', 'polmacoxib', 'nabumetone', 'niflumic acid', 'azapropazone', 'glucosamine', 'benzydamine', 'glucosaminoglycan polysulfate', 'proquazone', 'orgotein', 
+'nimesulide', 'feprazone', 'diacerein', 'morniflumate', 'tenidap', 'oxaceprol', 'chondroitin sulfate') or
+       lowcase(PRODNME) in:('phenylbutazone', 'mofebutazone', 'oxyphenbutazone', 'clofezone', 'kebuzone', 'indometacin', 'sulindac', 'tolmetin', 'zomepirac', 'diclofenac', 'alclofenac', 'bumadizone', 'etodolac', 'lonazolac', 'fentiazac', 'acemetacin', 'difenpiramide', 'oxametacin', 'proglumetacin', 
+'ketorolac', 'aceclofenac', 'bufexamac', 'piroxicam', 'tenoxicam', 'droxicam', 'lornoxicam', 'meloxicam', 'ibuprofen', 'naproxen', 'ketoprofen', 'fenoprofen', 'fenbufen', 'benoxaprofen', 'suprofen', 'pirprofen', 'flurbiprofen', 'indoprofen', 'tiaprofenic acid', 'oxaprozin', 'ibuproxam', 'dexibuprofen', 'flunoxaprofen', 'alminoprofen', 
+'dexketoprofen', 'naproxcinod', 'mefenamic acid', 'tolfenamic acid', 'flufenamic acid', 'meclofenamic acid', 'celecoxib', 'rofecoxib', 'valdecoxib', 'parecoxib', 'etoricoxib', 'lumiracoxib', 'polmacoxib', 'nabumetone', 'niflumic acid', 'azapropazone', 'glucosamine', 'benzydamine', 'glucosaminoglycan polysulfate', 'proquazone', 'orgotein', 
+'nimesulide', 'feprazone', 'diacerein', 'morniflumate', 'tenidap', 'oxaceprol', 'chondroitin sulfate')  or
+       lowcase(GENNME) in:('phenylbutazone', 'mofebutazone', 'oxyphenbutazone', 'clofezone', 'kebuzone', 'indometacin', 'sulindac', 'tolmetin', 'zomepirac', 'diclofenac', 'alclofenac', 'bumadizone', 'etodolac', 'lonazolac', 'fentiazac', 'acemetacin', 'difenpiramide', 'oxametacin', 'proglumetacin', 
+'ketorolac', 'aceclofenac', 'bufexamac', 'piroxicam', 'tenoxicam', 'droxicam', 'lornoxicam', 'meloxicam', 'ibuprofen', 'naproxen', 'ketoprofen', 'fenoprofen', 'fenbufen', 'benoxaprofen', 'suprofen', 'pirprofen', 'flurbiprofen', 'indoprofen', 'tiaprofenic acid', 'oxaprozin', 'ibuproxam', 'dexibuprofen', 'flunoxaprofen', 'alminoprofen', 
+'dexketoprofen', 'naproxcinod', 'mefenamic acid', 'tolfenamic acid', 'flufenamic acid', 'meclofenamic acid', 'celecoxib', 'rofecoxib', 'valdecoxib', 'parecoxib', 'etoricoxib', 'lumiracoxib', 'polmacoxib', 'nabumetone', 'niflumic acid', 'azapropazone', 'glucosamine', 'benzydamine', 'glucosaminoglycan polysulfate', 'proquazone', 'orgotein', 
+'nimesulide', 'feprazone', 'diacerein', 'morniflumate', 'tenidap', 'oxaceprol', 'chondroitin sulfate');
+
+run;
+
+
+data mscan.ndc_nonstatin;
+    set source.redbook_2010 source.redbook_2011 source.redbook_2012 source.redbook_2013 source.redbook_2014 source.redbook_2015 source.redbook_2017 source.redbook2018 source.redbook_2019 source.redbook_2020;
+
+    if lowcase(THRCLDS) in:('clofibrate', 'bezafibrate', 'aluminium clofibrate', 'gemfibrozil', 'fenofibrate', 'simfibrate', 'ronifibrate', 'ciprofibrate', 'etofibrate', 'clofibride', 'choline fenofibrate', 'colestyramine', 'colestipol', 'colextran', 'colesevelam', 'niceritrol', 'nicotinic acid', 'nicofuranose', 'aluminium nicotinate',
+'nicotinyl alcohol (pyridylcarbinol)', 'pyridylcarbinol', 'nicotinyl alcohol', 'acipimox', 'nicotinic acid, combinations', 'dextrothyroxine', 'probucol', 'tiadenol', 'meglutol', 'omega-3 triglycerides', 'magnesium pyridoxal 5-phosphate glutamate', 'policosanol', 'ezetimibe', 'alipogene tiparvovec', 'mipomersen', 'lomitapide', 'evolocumab', 'alirocumab', 'bempedoic acid')
+       or
+       lowcase(THRGRDS) in:('clofibrate', 'bezafibrate', 'aluminium clofibrate', 'gemfibrozil', 'fenofibrate', 'simfibrate', 'ronifibrate', 'ciprofibrate', 'etofibrate', 'clofibride', 'choline fenofibrate', 'colestyramine', 'colestipol', 'colextran', 'colesevelam', 'niceritrol', 'nicotinic acid', 'nicofuranose', 'aluminium nicotinate', 'nicotinyl alcohol (pyridylcarbinol)',
+'pyridylcarbinol', 'nicotinyl alcohol', 'acipimox', 'nicotinic acid, combinations', 'dextrothyroxine', 'probucol', 'tiadenol', 'meglutol', 'omega-3 triglycerides', 'magnesium pyridoxal 5-phosphate glutamate', 'policosanol', 'ezetimibe', 'alipogene tiparvovec', 'mipomersen', 'lomitapide', 'evolocumab', 'alirocumab', 'bempedoic acid')
+       or
+       lowcase(PRODNME) in:('clofibrate', 'bezafibrate', 'aluminium clofibrate', 'gemfibrozil', 'fenofibrate', 'simfibrate', 'ronifibrate', 'ciprofibrate', 'etofibrate', 'clofibride', 'choline fenofibrate', 'colestyramine', 'colestipol', 'colextran', 'colesevelam', 'niceritrol', 'nicotinic acid', 'nicofuranose', 'aluminium nicotinate', 'nicotinyl alcohol (pyridylcarbinol)', 
+'pyridylcarbinol', 'nicotinyl alcohol', 'acipimox', 'nicotinic acid, combinations', 'dextrothyroxine', 'probucol', 'tiadenol', 'meglutol', 'omega-3 triglycerides', 'magnesium pyridoxal 5-phosphate glutamate', 'policosanol', 'ezetimibe', 'alipogene tiparvovec', 'mipomersen', 'lomitapide', 'evolocumab', 'alirocumab', 'bempedoic acid')
+       or
+       lowcase(GENNME) in:('clofibrate', 'bezafibrate', 'aluminium clofibrate', 'gemfibrozil', 'fenofibrate', 'simfibrate', 'ronifibrate', 'ciprofibrate', 'etofibrate', 'clofibride', 'choline fenofibrate', 'colestyramine', 'colestipol', 'colextran', 'colesevelam', 'niceritrol', 'nicotinic acid', 'nicofuranose', 'aluminium nicotinate', 'nicotinyl alcohol (pyridylcarbinol)', 
+'pyridylcarbinol', 'nicotinyl alcohol', 'acipimox', 'nicotinic acid, combinations', 'dextrothyroxine', 'probucol', 'tiadenol', 'meglutol', 'omega-3 triglycerides', 'magnesium pyridoxal 5-phosphate glutamate', 'policosanol', 'ezetimibe', 'alipogene tiparvovec', 'mipomersen', 'lomitapide', 'evolocumab', 'alirocumab', 'bempedoic acid');
+
+run;
+
+data mscan.ndc_proton_pump_inhibitors;
+    set source.redbook_2010 source.redbook_2011 source.redbook_2012 source.redbook_2013 source.redbook_2014 source.redbook_2015 source.redbook_2017 source.redbook2018 source.redbook_2019 source.redbook_2020;
+
+    if lowcase(THRCLDS) in:('omeprazole', 'pantoprazole', 'lansoprazole', 'rabeprazole', 'esomeprazole', 'dexlansoprazole', 'dexrabeprazole', 'vonoprazan')
+       or
+       lowcase(THRGRDS) in:('omeprazole', 'pantoprazole', 'lansoprazole', 'rabeprazole', 'esomeprazole', 'dexlansoprazole', 'dexrabeprazole', 'vonoprazan')
+       or
+       lowcase(PRODNME) in:('omeprazole', 'pantoprazole', 'lansoprazole', 'rabeprazole', 'esomeprazole', 'dexlansoprazole', 'dexrabeprazole', 'vonoprazan')
+       or
+       lowcase(GENNME) in:('omeprazole', 'pantoprazole', 'lansoprazole', 'rabeprazole', 'esomeprazole', 'dexlansoprazole', 'dexrabeprazole', 'vonoprazan');
+
+run;
+
+
+
+
+
+/*identify the co-medications based on ndcnum*/
+data mscan.comedication_final;
+set mscan.comedication_final;
+drug_class = 'acei' if ndcnum in (select ndcnum from mscan.ndc_acei);
+drug_class = 'arb' if ndcnum in (select ndcnum from mscan.ndc_arb);
+drug_class = 'av' if ndcnum in (select ndcnum from mscan.ndc_av);
+drug_class = 'Aspirin' if ndcnum in (select ndcnum from mscan.ndc_aspirin);
+drug_class = 'Antiarrhythmics' if ndcnum in (select ndcnum from mscan.ndc_antiarrhythmics);
+drug_class = 'Antiplatelets' if ndcnum in (select ndcnum from mscan.ndc_antiplatelets);
+drug_class = 'Beta-Blockers' if ndcnum in (select ndcnum from mscan.ndc_beta_blockers);
+drug_class = 'Calcium-channel blockers' if ndcnum in (select ndcnum from mscan.ndc_calcium_channel_blockers);
+drug_class = 'Diuretics' if ndcnum in (select ndcnum from mscan.ndc_diuretics);
+drug_class = 'Other antihypertensives' if ndcnum in (select ndcnum from mscan.ndc_other_antihypertensives);
+drug_class = 'Diabetes drugs' if ndcnum in (select ndcnum from mscan.ndc_diabetes_drugs);
+drug_class = 'Estrogens' if ndcnum in (select ndcnum from mscan.ndc_estrogens);
+drug_class = 'Progestins' if ndcnum in (select ndcnum from mscan.ndc_progestins);
+drug_class = 'Heparin and low-molecular-weight heparins' if ndcnum in (select ndcnum from mscan.ndc_heparin_lmwh);
+drug_class = 'Nonsteroidal anti-inflammatory drugs' if ndcnum in (select ndcnum from mscan.ndc_nsaids);
+drug_class = 'Nonstatin lipid-lowering drugs' if ndcnum in (select ndcnum from mscan.ndc_nonstatin);
+drug_class = 'Proton-pump inhibitors' if ndcnum in (select ndcnum from mscan.ndc_proton_pump_inhibitors);
+
+run;
+
+
+/* Sort the mscan.ndc_acei dataset */
+proc sort data=mscan.ndc_acei;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_arb;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_av;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_aspirin;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_antiarrhythmics;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_antiplatelets;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_beta_blockers;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_calcium_channel_blockers;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_diuretics;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_other_antihypertensives;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_diabetes_drugs;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_estrogens;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_progestins;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_heparin_lmwh;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_nsaids;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_nonstatin;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_proton_pump_inhibitors;
+    by ndcnum;
+run;
+
+
+/* Sort the mscan.comedication_final dataset */
+proc sort data=mscan.comedication_final;
+    by ndcnum;
+run;
+
+data mscan.comedication_final;
+    set mscan.comedication_final;
+
+    /* Define the length of the new variable */
+    length new_variable $ 20;
+
+    /* Initialize the new variable to null (missing) */
+    new_variable = '';
+
+run;
+/* Create a temporary dataset with ndcnum from mscan.ndc_acei */
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_acei;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'acei'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_arb;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'arb'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_av;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'av'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_aspirin;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'aspirin'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_antiarrhythmics;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'antiarrhythmics'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_antiplatelets;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'antiplatelets'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_beta_blockers;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'beta_blockers'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_calcium_channel_blockers;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'calcium_c_blockers'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_diuretics;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'diuretics'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_other_antihypertensives;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'otherAH'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_diabetes_drugs;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'diabetes_drugs'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_estrogens;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'estrogens'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_progestins;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'progestins'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_heparin_lmwh;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'heparin_lmwh'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_nsaids;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'nsaids'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_nonstatin;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'nonstatin'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+proc sql;
+    create table temp as 
+    select distinct ndcnum from mscan.ndc_proton_pump_inhibitors;
+quit;
+
+/* Merge the sorted datasets */
+proc sql;
+    update mscan.comedication_final
+    set new_variable = 'proton_p_inhibitors'
+    where ndcnum in (select ndcnum from temp);
+quit;
+
+
+/*setting the analytical_cohort comedication variables*/
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'acei' then acei_flag = 1;
+    else acei_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(acei_flag) as acei_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort as
+    select a.*, coalesce(b.acei_flag, 0) as acei
+    from mscan.analytical_cohort as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'arb' then arb_flag = 1;
+    else arb_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(arb_flag) as arb_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort as
+    select a.*, coalesce(b.arb_flag, 0) as arb
+    from mscan.analytical_cohort as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'av' then av_flag = 1;
+    else av_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(av_flag) as av_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort as
+    select a.*, coalesce(b.av_flag, 0) as av
+    from mscan.analytical_cohort as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'aspirin' then aspirin_flag = 1;
+    else aspirin_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(aspirin_flag) as aspirin_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort as
+    select a.*, coalesce(b.aspirin_flag, 0) as aspirin
+    from mscan.analytical_cohort as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'antiarrhythmics' then antiarrhythmics_flag = 1;
+    else antiarrhythmics_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(antiarrhythmics_flag) as antiarrhythmics_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort as
+    select a.*, coalesce(b.antiarrhythmics_flag, 0) as antiarrhythmics
+    from mscan.analytical_cohort as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'antiplatelets' then antiplatelets_flag = 1;
+    else antiplatelets_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(antiplatelets_flag) as antiplatelets_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort as
+    select a.*, coalesce(b.antiplatelets_flag, 0) as antiplatelets
+    from mscan.analytical_cohort as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'beta_blockers' then beta_blockers_flag = 1;
+    else beta_blockers_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(beta_blockers_flag) as beta_blockers_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort as
+    select a.*, coalesce(b.beta_blockers_flag, 0) as beta_blockers
+    from mscan.analytical_cohort as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'calcium_c_blockers' then calcium_c_blockers_flag = 1;
+    else calcium_c_blockers_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(calcium_c_blockers_flag) as calcium_c_blockers_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort as
+    select a.*, coalesce(b.calcium_c_blockers_flag, 0) as calcium_c_blockers
+    from mscan.analytical_cohort as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'diuretics' then diuretics_flag = 1;
+    else diuretics_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(diuretics_flag) as diuretics_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort as
+    select a.*, coalesce(b.diuretics_flag, 0) as diuretics
+    from mscan.analytical_cohort as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'otherAH' then other_antihyp_flag = 1;
+    else other_antihyp_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(other_antihyp_flag) as other_antihyp_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort as
+    select a.*, coalesce(b.other_antihyp_flag, 0) as other_antihyp
+    from mscan.analytical_cohort as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'diabetes_drugs' then diabetes_drugs_flag = 1;
+    else diabetes_drugs_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(diabetes_drugs_flag) as diabetes_drugs_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort as
+    select a.*, coalesce(b.diabetes_drugs_flag, 0) as diabetes_drugs
+    from mscan.analytical_cohort as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'estrogens' then estrogens_flag = 1;
+    else estrogens_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(estrogens_flag) as estrogens_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort as
+    select a.*, coalesce(b.estrogens_flag, 0) as estrogens
+    from mscan.analytical_cohort as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'progestins' then progestins_flag = 1;
+    else progestins_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(progestins_flag) as progestins_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort as
+    select a.*, coalesce(b.progestins_flag, 0) as progestins
+    from mscan.analytical_cohort as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'heparin_lmwh' then heparin_lmwh_flag = 1;
+    else heparin_lmwh_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(heparin_lmwh_flag) as heparin_lmwh_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort as
+    select a.*, coalesce(b.heparin_lmwh_flag, 0) as heparin_lmwh
+    from mscan.analytical_cohort as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'nsaids' then nsaids_flag = 1;
+    else nsaids_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(nsaids_flag) as nsaids_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort as
+    select a.*, coalesce(b.nsaids_flag, 0) as nsaids
+    from mscan.analytical_cohort as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'nonstatin' then nonstatin_flag = 1;
+    else nonstatin_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(nonstatin_flag) as nonstatin_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort as
+    select a.*, coalesce(b.nonstatin_flag, 0) as nonstatin
+    from mscan.analytical_cohort as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+data temp_comedication;
+    set mscan.comedication_final;
+    if new_variable = 'proton_p_inhibitors' then proton_p_inhibitors_flag = 1;
+    else proton_p_inhibitors_flag = 0;
+run;
+proc sql;
+    create table aggregated_comedication as
+    select enrolid, max(proton_p_inhibitors_flag) as proton_p_inhibitors_flag
+    from temp_comedication
+    group by enrolid;
+quit;
+proc sql;
+    create table mscan.analytical_cohort as
+    select a.*, coalesce(b.proton_p_inhibitors_flag, 0) as proton_p_inhibitors
+    from mscan.analytical_cohort as a
+    left join aggregated_comedication as b
+    on a.enrolid = b.enrolid;
+quit;
+
+

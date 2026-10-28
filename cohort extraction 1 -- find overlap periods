@@ -1,0 +1,366 @@
+/*getting all doac claims*/
+proc sql;
+    create table mscan.all_doac_2010 as
+    select * from source.ccaed103
+    where ndcnum in (select ndcnum from mscan.ndc_doac);
+quit;
+
+proc sql;
+    create table mscan.all_doac_2011 as
+    select * from source.ccaed112
+    where ndcnum in (select ndcnum from mscan.ndc_doac);
+quit;
+
+proc sql;
+    create table mscan.all_doac_2012 as
+    select * from source.ccaed121
+    where ndcnum in (select ndcnum from mscan.ndc_doac);
+quit;
+
+proc sql;
+    create table mscan.all_doac_2013 as
+    select * from source.ccaed131
+    where ndcnum in (select ndcnum from mscan.ndc_doac);
+quit;
+
+proc sql;
+    create table mscan.all_doac_2014 as
+    select * from source.ccaed141
+    where ndcnum in (select ndcnum from mscan.ndc_doac);
+quit;
+
+proc sql;
+    create table mscan.all_doac_2015 as
+    select * from source.ccaed151
+    where ndcnum in (select ndcnum from mscan.ndc_doac);
+quit;
+
+proc sql;
+    create table mscan.all_doac_2016 as
+    select * from source.ccaed161
+    where ndcnum in (select ndcnum from mscan.ndc_doac);
+quit;
+
+proc sql;
+    create table mscan.all_doac_2017 as
+    select * from source.ccaed171
+    where ndcnum in (select ndcnum from mscan.ndc_doac);
+quit;
+
+proc sql;
+    create table mscan.all_doac_2018 as
+    select * from source.ccaed181
+    where ndcnum in (select ndcnum from mscan.ndc_doac);
+quit;
+
+proc sql;
+    create table mscan.all_doac_2019 as
+    select * from source.ccaed192
+    where ndcnum in (select ndcnum from mscan.ndc_doac);
+quit;
+
+/*getting all statin claims*/
+proc sql;
+    create table mscan.all_statin_2011 as
+    select enrolid, ndcnum, svcdate, daysupp, sex from source.ccaed112
+    where ndcnum in (select ndcnum from mscan.ndc_statin);
+quit;
+
+proc sql;
+    create table mscan.all_statin_2012 as
+    select enrolid, ndcnum, svcdate, daysupp, sex from source.ccaed121
+    where ndcnum in (select ndcnum from mscan.ndc_statin);
+quit;
+
+proc sql;
+    create table mscan.all_statin_2013 as
+    select enrolid, ndcnum, svcdate, daysupp, sex from source.ccaed131
+    where ndcnum in (select ndcnum from mscan.ndc_statin);
+quit;
+
+proc sql;
+    create table mscan.all_statin_2014 as
+    select enrolid, ndcnum, svcdate, daysupp, sex from source.ccaed141
+    where ndcnum in (select ndcnum from mscan.ndc_statin);
+quit;
+
+proc sql;
+    create table mscan.all_statin_2015 as
+    select enrolid, ndcnum, svcdate, daysupp, sex from source.ccaed151
+    where ndcnum in (select ndcnum from mscan.ndc_statin);
+quit;
+
+proc sql;
+    create table mscan.all_statin_2016 as
+    select enrolid, ndcnum, svcdate, daysupp, sex from source.ccaed161
+    where ndcnum in (select ndcnum from mscan.ndc_statin);
+quit;
+
+proc sql;
+    create table mscan.all_statin_2017 as
+    select enrolid, ndcnum, svcdate, daysupp, sex from source.ccaed171
+    where ndcnum in (select ndcnum from mscan.ndc_statin);
+quit;
+
+proc sql;
+    create table mscan.all_statin_2018 as
+    select enrolid, ndcnum, svcdate, daysupp, sex from source.ccaed181
+    where ndcnum in (select ndcnum from mscan.ndc_statin);
+quit;
+
+proc sql;
+    create table mscan.all_statin_2019 as
+    select enrolid, ndcnum, svcdate, daysupp, sex from source.ccaed192
+    where ndcnum in (select ndcnum from mscan.ndc_statin);
+Quit;
+
+/*combine all statin/doac by year to one dataset */
+data mscan.all_statin;
+    set 
+        mscan.all_statin_2011 (in=in1) 
+        mscan.all_statin_2012 (in=in2)
+        mscan.all_statin_2013 (in=in3)
+        mscan.all_statin_2014 (in=in4)
+        mscan.all_statin_2015 (in=in5)
+        mscan.all_statin_2016 (in=in6)
+        mscan.all_statin_2017 (in=in7)
+        mscan.all_statin_2018 (in=in8)
+        mscan.all_statin_2019 (in=in9);
+    if enrolid ne .;
+run;
+
+data mscan.all_doac_claims;
+    set 
+	mscan.all_doac_2010 (in=in1)
+        mscan.all_doac_2011 (in=in2) 
+        mscan.all_doac_2012 (in=in3)
+        mscan.all_doac_2013 (in=in4)
+        mscan.all_doac_2014 (in=in5)
+        mscan.all_doac_2015 (in=in6)
+        mscan.all_doac_2016 (in=in7)
+        mscan.all_doac_2017 (in=in8)
+        mscan.all_doac_2018 (in=in9)
+        mscan.all_doac_2019 (in=in10);
+    if enrolid ne .;
+run;
+
+/*find common enrolid among all_doac_claims and all_statin*/
+proc sql;
+    create table mscan.common_unique_enrolids as
+    select distinct a.enrolid
+    from mscan.all_doac_claims as a, mscan.all_statin as b
+    where a.enrolid = b.enrolid;
+quit;
+
+/*use common enrolid to extract doac and statin claims*/
+Proc sql;
+	Create table mscan.common_doac as
+	Select * from mscan.all_doac_claims where enrolid in (select enrolid from mscan.common_unique_enrolids);
+Quit;
+Proc sql;
+	Create table mscan.common_statin as
+	Select * from mscan.all_statin where enrolid in (select enrolid from mscan.common_unique_enrolids);
+Quit;
+
+/*add drug name to common_doac and common_statin*/
+proc sort data=mscan.common_doac;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_doac;
+    by ndcnum;
+run;
+data mscan.common_doac;
+    merge mscan.common_doac (in=a)
+          mscan.ndc_doac (in=b keep=ndcnum thrdtds rename=(thrdtds=drugname));
+    by ndcnum;
+    if a;
+Run;
+
+proc sort data=mscan.common_statin ;
+    by ndcnum;
+run;
+proc sort data=mscan.ndc_statin;
+    by ndcnum;
+run;
+data mscan.common_statin;
+    merge mscan.common_statin (in=a)
+          mscan.ndc_statin (in=b keep=ndcnum thrdtds rename=(thrdtds=drugname));
+    by ndcnum;
+    if a;
+Run;
+
+/*add end date for each drug dispensing*/
+Data mscan.common_statin;
+    Set mscan.common_statin;
+    Enddate = svcdate + daysupp;
+    Format enddate mmddyy10.;
+Run;
+
+Data mscan.common_doac;
+    Set mscan.common_doac;
+    Enddate = svcdate + daysupp;
+    Format enddate mmddyy10.;
+Run;
+
+/*delete those with days supply <= 0*/
+Data mscan.common_statin;
+    Set mscan.common_statin;
+    If daysupp > 0;
+Run;
+
+Data mscan.common_doac;
+    Set mscan.common_doac;
+    If daysupp > 0;
+Run;
+
+
+/*combine common_doac and common_statin and get all_drug_claims*/
+proc sort data=mscan.common_doac; by enrolid; run;
+proc sort data=mscan.common_statin; by enrolid; run;
+data mscan.all_drug_claims;
+    merge mscan.common_doac (in=a rename=(svcdate=svcdate_doac enddate=enddate_doac drugname=doac_name))
+          mscan.common_statin(in=b rename=(svcdate=svcdate_statin enddate=enddate_statin drugname=statin_name));
+    by enrolid;
+    if a and b;
+run;
+
+
+/*actual code for overlap periods*/
+data mscan.common_doac;
+    set mscan.common_doac (rename=(svcdate=svcdate_doac enddate=enddate_doac));
+run;
+
+data mscan.common_statin;
+    set mscan.common_statin (rename=(svcdate=svcdate_statin enddate=enddate_statin));
+run;
+proc sort data=mscan.common_doac; by enrolid svcdate_doac enddate_doac; run;
+proc sort data=mscan.common_statin; by enrolid svcdate_statin enddate_statin; run;
+data mscan.common_doac;
+    set mscan.common_doac;
+    rename drugname = doac_name; /* Renaming drugname to doac_name to avoid conflicts */
+run;
+
+data mscan.common_statin;
+    set mscan.common_statin;
+    rename drugname = statin_name; /* Renaming drugname to statin_name to avoid conflicts */
+run;
+
+proc sort data=mscan.common_doac; by enrolid svcdate_doac enddate_doac; run;
+proc sort data=mscan.common_statin; by enrolid svcdate_statin enddate_statin; run;
+data mscan.overlap_period_3;
+    merge mscan.common_doac (in=doac) mscan.common_statin (in=statin);
+    by enrolid;
+    if doac and statin;
+
+    retain day0;
+    if first.enrolid then day0 = .;
+
+    /* Comprehensive condition to check for any overlap */
+    if (svcdate_doac <= enddate_statin and svcdate_statin <= enddate_doac) or
+       (svcdate_doac <= svcdate_statin and enddate_doac >= enddate_statin) or
+       (svcdate_statin <= svcdate_doac and enddate_statin >= enddate_doac) then do;
+        overlap_start = max(svcdate_doac, svcdate_statin);
+        overlap_end = min(enddate_doac, enddate_statin);
+
+        if day0 = . or overlap_start < day0 then day0 = overlap_start;
+        output;
+    end;
+
+    keep enrolid day0 overlap_start overlap_end doac_name statin_name;
+run;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*test codes*/
+
+/*find overlaps*/
+
+
+data mscan.overlap_period;
+    merge mscan.common_doac (in=doac) mscan.common_statin (in=statin);
+    by enrolid;
+    if doac and statin;
+
+    retain day0;
+    if first.enrolid then day0 = .;
+
+    /* Comprehensive condition to check for any overlap */
+    if (svcdate_doac <= enddate_statin and svcdate_statin <= enddate_doac) then do;
+        overlap_start = max(svcdate_doac, svcdate_statin);
+        overlap_end = min(enddate_doac, enddate_statin);
+
+        if day0 = . or overlap_start < day0 then day0 = overlap_start;
+        output;
+    end;
+
+    keep enrolid day0 overlap_start overlap_end;
+run;
+
+
+
+/*find overlaps*/
+
+
+data mscan.overlap_period;
+    merge mscan.common_doac (in=doac) mscan.common_statin (in=statin);
+    by enrolid;
+    if doac and statin;
+
+    retain day0;
+    if first.enrolid then day0 = .;
+
+    /* Comprehensive condition to check for any overlap */
+    if (svcdate_doac <= enddate_statin and svcdate_statin <= enddate_doac) then do;
+        overlap_start = max(svcdate_doac, svcdate_statin);
+        overlap_end = min(enddate_doac, enddate_statin);
+
+        if day0 = . or overlap_start < day0 then day0 = overlap_start;
+        output;
+    end;
+
+    keep enrolid day0 overlap_start overlap_end doac_name statin_name;
+run;
+
+/* Merge the datasets with renamed variables */
+data mscan.common_all;
+    merge mscan.common_doac (in=a)
+          mscan.common_statin (in=b);
+    by enrolid;
+    if a and b; /* Ensure both DOAC and statin records are present */
+run;
+
+/* Detect overlaps and calculate overlap periods */
+data mscan.overlap_period_2;
+    set mscan.common_all;
+    by enrolid;
+
+    /* Comprehensive overlap detection logic */
+    if (svcdate_doac <= enddate_statin and svcdate_statin <= enddate_doac) or
+       (svcdate_doac >= svcdate_statin and enddate_doac <= enddate_statin) or
+       (svcdate_doac <= svcdate_statin and enddate_doac >= enddate_statin) then do;
+        overlap_start = max(svcdate_doac, svcdate_statin);
+        overlap_end = min(enddate_doac, enddate_statin);
+        output; /* Output only records that meet the overlap condition */
+    end;
+
+    keep enrolid overlap_start overlap_end doac_name statin_name;
+run;
+

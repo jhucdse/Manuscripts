@@ -1,0 +1,141 @@
+PROC MEANS DATA=mscan.analytical_cohort MIN MAX MEAN MEDIAN STD Q1 Q3;
+Class interacting;
+    VAR age;
+RUN;
+PROC MEANS DATA=mscan.analytical_cohort MIN MAX MEAN MEDIAN STD Q1 Q3;
+Class interacting;
+    VAR daysuppsum;
+RUN;
+
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES hyptertension* interacting;
+RUN;
+
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES ckd* interacting;
+RUN;
+
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES liver* interacting;
+RUN;
+
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES stroke_se* interacting;
+RUN;
+
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES prior_bleeding* interacting;
+RUN;
+
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES alcohol* interacting;
+RUN;
+
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES diabetes* interacting;
+RUN;
+
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES chf* interacting;
+RUN;
+
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES mi* interacting;
+RUN;
+
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES af* interacting;
+RUN;
+
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES aids* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES ulcer* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES solidtumor* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES cerebro* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES copd* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES dementia* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES malignancy* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES rheumatologic* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES paralysis* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES vte* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES cad* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES pvd* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES hyperlipidemia* interacting;
+RUN;
+
+
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES acei* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES arb* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES av* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES aspirin* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES antiarrhythmics* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES antiplatelets* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES beta_blockers* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES calcium_c_blockers* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES diuretics* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES other_antihypertensives* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES diabetes_drugs* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES estrogens* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES progestins* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES heparin_lmwh* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES nsaids* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES nonstatin* interacting;
+RUN;
+PROC FREQ DATA=mscan.analytical_cohort;
+    TABLES proton_p_inhibitors* interacting;
+RUN;
