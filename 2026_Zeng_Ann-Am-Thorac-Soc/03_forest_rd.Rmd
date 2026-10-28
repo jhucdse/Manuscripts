@@ -1,0 +1,389 @@
+---
+title: "Forest plot of risk differences"
+author: "Lijuan Zeng"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+Purpose: Create dose-specific summary forest plots from saved R meta-analysis results
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls())
+
+library(haven)
+library(here)
+library(dplyr)
+library(tidyr)
+library(rlang)
+
+library(forestplot)
+```
+
+# Fig set up
+```{r}
+library(grid)
+
+if (!dir.exists("forestplot_rd_comb")) dir.create("forestplot_rd_comb")
+
+figpath <- here("forestplot_rd_comb/")
+```
+
+
+```{r}
+# read in data/03_percMA_rd_drug_group1.RData created from 03_percMA_rd.Rmd
+load("data/03_percMA_rd_drug_group1.RData")
+
+
+# Define ordered factor levels for ae_term
+ae_term_levels <- c(
+  "URTI: Nasopharyngitis", "URTI: Sinusitis", "URTI: Sinusitis, acute", 
+  "URTI: Rhinitis", "URTI: Rhinitis, allergic",
+  "URTI: Pharyngitis", "URTI: Location not noted", "URTI: Location not noted, viral", 
+  "LRTI: Bronchitis", "LRTI: Pneumonia", "LRTI: Location not noted", 
+  "RTI: Location not noted", "RTI: Location not noted, viral",  
+  "Cough", 
+  "Other respiratory harms"
+)
+
+# Define ordered factor levels for time_frame
+time_frame_levels <- c("0-6 months", "7-12 months", "13-24 months", "> 24 months")
+
+# For forest plots, we are restricting to outcomes with at least 3 studies
+dat_fig <- meta_summary_df %>%
+  filter(Number_of_Studies >= 3) %>%
+  mutate(ae_term = factor(Outcome, levels = ae_term_levels, ordered = TRUE),
+         time_frame = factor(Timepoint, levels = time_frame_levels, ordered = TRUE),
+         upper = round(Upper_CI * 100, digits = 1),
+         lower = round(Lower_CI * 100, digits = 1),
+         mean = round(RD_Estimate * 100, digits = 1),
+         rd_ci = paste0(mean, " (", lower, ", ", upper, ")"),
+         Number_of_Studies = as.character(Number_of_Studies),
+         highlight = (Upper_CI < 0 & Lower_CI < 0) | (Upper_CI > 0 & Lower_CI > 0)
+         )
+
+# Set the upper and lower bounds for the x-axis
+upper_limit <- 6
+lower_limit <- -10
+by_interval <- 2
+```
+
+```{r}
+table(dat_fig$Drug)
+```
+
+```{r}
+lira_drugs <- c("Liraglutide 1.2 mg", "Liraglutide 1.8 mg", "Liraglutide 3.0 mg")
+dat_fig_lira <- dat_fig %>% 
+  filter(Drug %in% lira_drugs) %>%
+  mutate(Drug = factor(Drug, levels = lira_drugs, ordered = TRUE))
+
+sema_drugs <- c("Semaglutide 1.0 mg", "Semaglutide 2.4 mg", "Semaglutide 14 mg (OD)")
+dat_fig_sema <- dat_fig %>% 
+  filter(Drug %in% sema_drugs) %>%
+  mutate(Drug = factor(Drug, levels = sema_drugs, ordered = TRUE))
+
+tirz_drugs <- c("Tirzepatide 5 mg", "Tirzepatide 10 mg", "Tirzepatide 15 mg")
+dat_fig_tirz <- dat_fig %>% 
+  filter(Drug %in% tirz_drugs) %>%
+  mutate(Drug = factor(Drug, levels = tirz_drugs, ordered = TRUE))
+
+dat_fig_nabu <- dat_fig %>% 
+  filter(Drug %in% c("Naltrexone 32 mg/Bupropion 360 mg"))
+```
+
+
+# Function to output figure by drug
+```{r}
+make_forestplot <- function(data, suffix, figpath = "./", fig_height = 16, fig_width = 8,
+                            show_footnote = TRUE,
+                            footnote_text = "**Statistically significant risk difference (95% CI does not include 0). \nAbbreviations: URTI: upper respiratory tract infection; LRTI: lower respiratory tract infection; RTI: respiratory tract infection.") {
+  
+  # Sort data
+  data_ordered <- data %>%
+    arrange(Drug, ae_term, time_frame)
+  
+  forest_list <- list()
+  
+  for (drug in unique(data_ordered$Drug)) {
+    drug_data <- data_ordered %>% filter(Drug == drug)
+    
+    # Drug-level summary row
+    forest_list[[length(forest_list) + 1]] <- data.frame(
+      label = drug,
+      Number_of_Studies = "",
+      mean = NA, lower = NA, upper = NA,
+      rd_ci = "",
+      is.summary = TRUE,
+      highlight = FALSE
+    )
+    
+    for (ae in unique(drug_data$ae_term)) {
+      ae_data <- drug_data %>% filter(ae_term == ae)
+      
+      # Outcome-level summary row
+      forest_list[[length(forest_list) + 1]] <- data.frame(
+        label = paste0("  ", ae),
+        Number_of_Studies = "",
+        mean = NA, lower = NA, upper = NA,
+        rd_ci = "",
+        is.summary = TRUE,
+        highlight = FALSE
+      )
+      
+      # Actual data rows
+      ae_rows <- ae_data %>%
+        mutate(
+          label = paste0("    ", Timepoint),
+          is.summary = FALSE,
+          highlight = (Upper_CI < 0 & Lower_CI < 0) | (Upper_CI > 0 & Lower_CI > 0),
+          rd_ci = paste0(round(RD_Estimate * 100, 1), " (",
+                         round(Lower_CI * 100, 1), ", ",
+                         round(Upper_CI * 100, 1), ")"),
+          mean = round(RD_Estimate * 100, 1),
+          lower = round(Lower_CI * 100, 1),
+          upper = round(Upper_CI * 100, 1)
+        ) %>%
+        select(label, Number_of_Studies, mean, lower, upper, rd_ci, is.summary, highlight)
+      
+      forest_list[[length(forest_list) + 1]] <- ae_rows
+    }
+  }
+  
+  # Combine and finalize
+  forest_df <- bind_rows(forest_list) %>%
+    mutate(label = ifelse(highlight, paste0(label, " **"), label))
+  
+  labeltext <- cbind(
+    Label = forest_df$label,
+    `# Studies` = forest_df$Number_of_Studies,
+    `Risk Difference % (95% CI)` = forest_df$rd_ci
+  )
+  
+  labeltext <- rbind(
+    c("Drug/Outcome/Study durations", "# Studies", "Risk Difference % (95% CI)"),
+    labeltext
+  )
+  
+  data_matrix <- forest_df %>% select(mean, lower, upper)
+  data_matrix <- rbind(c(NA, NA, NA), data_matrix)
+  
+  is_summary <- c(TRUE, forest_df$is.summary)
+  
+  # Create the plot
+  forest_plot <- forestplot(
+    labeltext,
+    mean = data_matrix$mean,
+    lower = data_matrix$lower,
+    upper = data_matrix$upper,
+    is.summary = is_summary,
+    xlab = "Risk Difference % (Drug-Placebo)",
+    xticks = seq(lower_limit, upper_limit, by = by_interval),
+    xlim = c(lower_limit, upper_limit),
+    lineheight = unit(0.5, "cm"),
+    boxsize = 0.5,
+    txt_gp = fpTxtGp(
+      label = gpar(cex = 0.8),
+      xlab  = gpar(cex = 0.8, fontface = "bold"),
+      ticks = gpar(cex = 0.6, fontface = "plain", col = "black")
+    ),
+    fn.ci_norm = forestplot::fpDrawDiamondCI,
+    fn.ci_sum = forestplot::fpDrawSummaryCI,
+    col = fpColors(box = "steelblue", line = "darkgrey", summary = "steelblue"),
+    lwd.ci = 2,
+    lwd.zero = 2,
+    lwd.xaxis = 2,
+    lwd.summary = 2,
+    xlog = FALSE
+  )
+  
+  # Save the plot
+  # filename <- paste0(figpath, "forest_rd_", suffix, ".tiff")
+  # jpeg(
+  #   filename = filename,
+  #   width = fig_width,
+  #   height = fig_height,
+  #   units = "in",
+  #   res = 400,
+  #   compression = "lzw"
+  # )
+  filename <- paste0(figpath, "forest_rd_", suffix, ".jpeg")
+  jpeg(width = fig_width, 
+       height = fig_height, 
+       units = 'in', 
+       res = 500, 
+      quality = 100, 
+      filename = filename)
+  
+  print(forest_plot)
+  
+  # Conditionally add footnote
+   if (show_footnote && !is.null(footnote_text) && footnote_text != "") {
+    grid.text(footnote_text, 
+              x = unit(0.01, "npc"), y = unit(0.02, "npc"), just = "left", 
+              gp = gpar(fontsize = 8))
+  }
+  
+  # Close the device
+  dev.off()
+}
+
+```
+
+
+
+# Liraglutide
+```{r}
+make_forestplot(dat_fig_lira, suffix = "lira", figpath = figpath)
+```
+
+# Semaglutide
+```{r}
+make_forestplot(dat_fig_sema, suffix = "sema", figpath = figpath, fig_height = 12)
+```
+# Tirzepatide
+```{r}
+make_forestplot(dat_fig_tirz, suffix = "tirz", figpath = figpath, fig_height = 4, 
+                footnote_text = "Abbreviations: URTI: upper respiratory tract infection; LRTI: lower respiratory tract infection.")
+```
+
+# Naltrexone/Bupropion
+```{r}
+make_forestplot(dat_fig_nabu, suffix = "nabu", figpath = figpath, fig_height = 3.1, fig_width=8.3,
+                footnote_text = "**Statistically significant risk difference (95% CI does not include 0). Abbreviation: URTI: upper respiratory tract infection.")
+```
+
+
+# Test code - Liraglutide
+```{r}
+# Create a data frame with labels and statistics
+dat_lira_order <- dat_fig_lira %>%
+  arrange(Drug, ae_term, time_frame)
+
+forest_list <- list()
+
+for (drug in unique(dat_lira_order$Drug)) {
+  drug_data <- dat_lira_order %>% filter(Drug == drug)
+
+  # Drug-level summary row
+  forest_list[[length(forest_list) + 1]] <- data.frame(
+    label = drug,
+    Number_of_Studies = "",
+    mean = NA, lower = NA, upper = NA,
+    rd_ci = "",
+    is.summary = TRUE,
+    highlight = FALSE
+  )
+
+  for (ae in unique(drug_data$ae_term)) {
+    ae_data <- drug_data %>% filter(ae_term == ae)
+
+    # Outcome-level summary row
+    forest_list[[length(forest_list) + 1]] <- data.frame(
+      label = paste0("  ", ae),
+      Number_of_Studies = "",
+      mean = NA, lower = NA, upper = NA,
+      rd_ci = "",  # Empty for summary
+      is.summary = TRUE,
+      highlight = FALSE
+    )
+
+    # Actual data rows
+    ae_rows <- ae_data %>%
+      mutate(label = paste0("    ", Timepoint),
+             is.summary = FALSE) %>%
+      select(label, Number_of_Studies, mean, lower, upper, rd_ci, is.summary, highlight)
+
+    forest_list[[length(forest_list) + 1]] <- ae_rows
+  }
+}
+
+# Combine into one data frame
+forest_df <- bind_rows(forest_list) %>%
+  mutate(label = ifelse(highlight, paste0(label, " **"), label))
+
+
+# Build label matrix with 2 columns: Timepoint label + RD (CI)
+labeltext <- cbind(
+  Label = forest_df$label,
+  `# Studies` = forest_df$Number_of_Studies,
+  `Risk Difference % (95% CI)` = forest_df$rd_ci
+)
+
+# Add column headers as the first row in the labeltext matrix
+labeltext <- rbind(
+  c("Drug/Outcome/Study durations",
+    "# Studies",
+    "Risk Difference % (95% CI)"),
+  labeltext
+)
+
+# Also add matching NA row for forest data
+data_matrix <- forest_df %>% select(mean, lower, upper)
+data_matrix <- rbind(c(NA, NA, NA), data_matrix)
+
+# Add to is.summary
+is_summary <- c(TRUE, forest_df$is.summary)
+
+```
+
+
+```{r, fig.width=8, fig.height=16}
+forestplot(labeltext,
+           mean = data_matrix$mean,
+           lower = data_matrix$lower,
+           upper = data_matrix$upper,
+           is.summary = is_summary,
+           xlab = "Risk Difference % (Drug-Placebo)",
+           xticks = seq(lower_limit, upper_limit, by = 3),
+           lineheight = unit(0.5, "cm"),
+           boxsize = 0.5,
+           txt_gp = fpTxtGp(label = gpar(cex = 0.8),
+                            xlab  = gpar(cex = 0.8, fontface = "bold"),
+                            ticks = gpar(cex = 0.6, fontface = "plain", col = "black")),
+           fn.ci_norm = forestplot::fpDrawDiamondCI,      # diamonds for regular rows
+           fn.ci_sum = forestplot::fpDrawSummaryCI,       # default wide bar for summaries
+           col = fpColors(box = "steelblue",
+                          line = "darkgrey",
+                          summary = "steelblue"),
+           lwd.ci = 2,
+           lwd.zero = 2,
+           lwd.xaxis = 2,
+           lwd.summary = 2,
+           xlog = FALSE
+           )
+```
+
+```{r}
+library(magick)
+img <- image_read(paste0(figpath,"forest_rd_lira.jpeg"))
+image_write(
+  img,
+  path = paste0(figpath,"forest_rd_lira_300dpi.jpeg"),
+  density = "300x300"
+)
+
+img <- image_read(paste0(figpath,"forest_rd_sema.jpeg"))
+image_write(
+  img,
+  path = paste0(figpath,"forest_rd_sema_300dpi.jpeg"),
+  density = "300x300"
+)
+
+img <- image_read(paste0(figpath,"forest_rd_tirz.jpeg"))
+image_write(
+  img,
+  path = paste0(figpath,"forest_rd_tirz_300dpi.jpeg"),
+  density = "300x300"
+)
+
+img <- image_read(paste0(figpath,"forest_rd_nabu.jpeg"))
+image_write(
+  img,
+  path = paste0(figpath,"forest_rd_nabu_300dpi.jpeg"),
+  density = "300x300"
+)
+```
+
+
+

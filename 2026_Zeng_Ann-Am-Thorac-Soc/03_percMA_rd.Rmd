@@ -1,0 +1,420 @@
+---
+title: "MA risk differences by drug"
+author: "Lijuan Zeng"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+Purpose: Estimate random-effects risk differences versus placebo
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls())
+
+library(haven)
+library(here)
+library(dplyr)
+library(rlang)
+library(writexl)
+
+library(meta)
+library(metafor)
+```
+
+
+
+# Load data
+
+```{r load_data, echo=FALSE}
+datapath <- paste0(here(),"/data_sas/")
+
+dat_inc_rd <- read_sas(paste0(datapath, "risk_diff.sas7bdat"))
+
+dat_inc_rd_dose <- read_sas(paste0(datapath, "risk_diff_drug_group1.sas7bdat"))
+```
+
+
+```{r}
+dat_lira <- dat_inc_rd %>% filter(drug_group0 == "Liraglutide")
+dat_sema <- dat_inc_rd %>% filter(drug_group0 == "Semaglutide")
+dat_tirz <- dat_inc_rd %>% filter(drug_group0 == "Tirzepatide")
+dat_orli <- dat_inc_rd %>% filter(drug_group0 == "Orlistat")
+dat_nabu <- dat_inc_rd %>% filter(drug_group0 == "Naltrexone/Bupropion")
+dat_phto <- dat_inc_rd %>% filter(drug_group0 == "Phentermine/Topiramate")
+```
+
+## Create a GLP-1 subdata
+
+Include GLP-1Ra drugs (Liraglutide, Semaglutide, Tirzepatide) in the analysis.
+```{r}
+dat_glp <- dat_inc_rd %>%
+  mutate(
+    drug_group2 = case_when(
+      drug_group0  %in% c("Liraglutide", "Semaglutide", "Tirzepatide") ~ "GLP-1Ra",
+      TRUE ~ "Other"
+    )
+  ) %>% 
+  filter(drug_group2 == "GLP-1Ra") 
+```
+
+
+## GLP-1 that only includes lira and sema
+
+Include GLP-1Ra drugs (Liraglutide, Semaglutide) in the analysis.
+```{r}
+dat_glp_v2 <- dat_inc_rd %>%
+  mutate(
+    drug_group3 = case_when(
+      drug_group0  %in% c("Liraglutide", "Semaglutide") ~ "GLP-1Ra",
+      TRUE ~ "Other"
+    )
+  ) %>% 
+  filter(drug_group3 == "GLP-1Ra") 
+```
+
+
+```{r}
+# REVIEW R08: k / nrow count comparisons, not necessarily independent studies.
+# Check shared controls in pooled class analyses; model settings are retained.
+run_meta_analysis <- function(data, output_plot_dir) {
+  outcomes <- unique(data$outcome_l2)
+  timepoints <- unique(data$timec2)
+  
+  all_meta_summaries <- list()
+  
+  for (outcome in outcomes) {
+    for (timepoint in timepoints) {
+      subset_data <- data %>% 
+        filter(outcome_l2 == outcome, timec2 == timepoint)
+
+      # Skip if no sufficient data (less than 2 studies)
+      if(nrow(subset_data) < 2) next
+
+      # Perform meta-analysis
+      meta_result <- metabin(
+        event.e = events_drug,
+        n.e = total_n_drug,
+        event.c = events_pbo,
+        n.c = total_n_pbo,
+        data = subset_data,
+        studlab = study,
+        sm = "RD",
+        method = "Inverse",
+        incr = 0.5, # adds 0.5 to all cells with zeros
+        method.incr = "only0", #continuity correction method should be used when only0
+        # method = "MH",
+        random = TRUE
+      )
+
+      # Extract results
+      meta_summary <- data.frame(
+        Outcome = outcome,
+        Timepoint = timepoint,
+        Number_of_Studies = meta_result$k,
+        RD_Estimate = meta_result$TE.random,
+        Lower_CI = meta_result$lower.random,
+        Upper_CI = meta_result$upper.random,
+        Heterogeneity_Q = meta_result$Q,
+        Heterogeneity_pval = meta_result$pval.Q,
+        I_squared = meta_result$I2,
+        Tau_squared = meta_result$tau^2
+      ) %>%
+        mutate(RD_with_CI = sprintf("%.3f (%.3f, %.3f)", RD_Estimate, Lower_CI, Upper_CI))
+
+      all_meta_summaries[[paste(outcome, timepoint, sep = "_")]] <- meta_summary
+
+      # Create forest plot
+      plot_filename <- paste0(output_plot_dir, "/forestplot_",
+                              gsub("[^a-zA-Z0-9]", "_", outcome), "_",
+                              gsub("[^a-zA-Z0-9]", "_", timepoint), ".png")
+      
+      png(plot_filename, width = 14, height = 5, units = "in", res = 300)
+      forest(meta_result,
+             xlab = "Risk Difference (95% CI)",
+             leftlabs = c("Study", "Drug Events", "Drug Total", "Placebo Events", "Placebo Total"),
+             label.e = "Drug",
+             label.c = "Placebo",
+             comb.random = TRUE,
+             digits = 3,
+             smlab = "Risk Difference",
+             col.square = "navy",
+             col.diamond = "darkred",
+             col.diamond.lines = "darkred")
+      dev.off()
+    }
+  }
+
+  # Combine all summaries into one dataframe
+  meta_summary_df <- bind_rows(all_meta_summaries)
+  return(meta_summary_df)
+}
+```
+
+# Total - RD meta analysis
+
+## Liraglutide
+```{r}
+final_summary_lira <- run_meta_analysis(dat_lira, "forestplot_rd/lira")
+# write.csv(final_summary_lira, "forestplot_rd/meta_analysis_summary_lira.csv", row.names = FALSE)
+# Save to Excel
+write_xlsx(final_summary_lira, "data/03_percMA_rd_lira.xlsx")
+# Save to RData
+save(final_summary_lira, file = "data/03_percMA_rd_lira.RData")
+```
+
+## Semaglutide
+```{r}
+final_summary_sema <- run_meta_analysis(dat_sema, "forestplot_rd/sema")
+write_xlsx(final_summary_sema, "data/03_percMA_rd_sema.xlsx")
+save(final_summary_sema, file = "data/03_percMA_rd_sema.RData")
+```
+
+## Tirzepatide
+```{r}
+final_summary_tirz <- run_meta_analysis(dat_tirz, "forestplot_rd/tirz")
+write_xlsx(final_summary_tirz, "data/03_percMA_rd_tirz.xlsx")
+save(final_summary_tirz, file = "data/03_percMA_rd_tirz.RData")
+```
+
+## Orlistat
+```{r}
+final_summary_orli <- run_meta_analysis(dat_orli, "forestplot_rd/orli")
+write_xlsx(final_summary_orli, "data/03_percMA_rd_orli.xlsx")
+save(final_summary_orli, file = "data/03_percMA_rd_orli.RData")
+```
+
+## Naltrexone/Bupropion
+```{r}
+final_summary_nabu <- run_meta_analysis(dat_nabu, "forestplot_rd/nabu")
+write_xlsx(final_summary_nabu, "data/03_percMA_rd_nabu.xlsx")
+save(final_summary_nabu, file = "data/03_percMA_rd_nabu.RData")
+```
+
+## Phentermine/Topiramate
+```{r}
+final_summary_phto <- run_meta_analysis(dat_phto, "forestplot_rd/phto")
+write_xlsx(final_summary_phto, "data/03_percMA_rd_phto.xlsx")
+save(final_summary_phto, file = "data/03_percMA_rd_phto.RData")
+```
+
+## GLP-1Ra (including lira, sema and tirz)
+```{r}
+final_summary_glp <- run_meta_analysis(dat_glp, "forestplot_rd/drug_group2")
+write_xlsx(final_summary_glp, "data/03_percMA_rd_glp.xlsx")
+save(final_summary_glp, file = "data/03_percMA_rd_glp.RData")
+```
+
+## GLP-1Ra (including lira and sema)
+```{r}
+final_summary_glp_v2 <- run_meta_analysis(dat_glp, "forestplot_rd/drug_group3")
+write_xlsx(final_summary_glp_v2, "data/03_percMA_rd_glp_v2.xlsx")
+save(final_summary_glp_v2, file = "data/03_percMA_rd_glp_v2.RData")
+```
+
+# By drug/dose
+```{r}
+# Define variables
+data <- dat_inc_rd_dose
+output_plot_dir <- "forestplot_rd/drug_group1"
+
+# Get unique values
+drugs <- unique(data$drug_group1)
+outcomes <- unique(data$outcome_l2)
+timepoints <- unique(data$timec2)
+
+# Store all summaries
+all_meta_summaries <- list()
+
+# Loop through drugs, outcomes, and timepoints
+for (drug in drugs) {
+  drug_data <- data %>% filter(drug_group1 == drug)
+  
+  for (outcome in outcomes) {
+    for (timepoint in timepoints) {
+      subset_data <- drug_data %>%
+        filter(outcome_l2 == outcome, timec2 == timepoint)
+      
+      # Skip if not enough data
+      if (nrow(subset_data) < 2) next
+      
+      # Run meta-analysis
+      meta_result <- metabin(
+        event.e = events_drug,
+        n.e = total_n_drug,
+        event.c = events_pbo,
+        n.c = total_n_pbo,
+        data = subset_data,
+        studlab = study,
+        sm = "RD",
+        method = "Inverse",
+        incr = 0.5,
+        method.incr = "only0",
+        random = TRUE
+      )
+      
+      # Store summary
+      meta_summary <- data.frame(
+        Drug = drug,
+        Outcome = outcome,
+        Timepoint = timepoint,
+        Number_of_Studies = meta_result$k,
+        RD_Estimate = meta_result$TE.random,
+        Lower_CI = meta_result$lower.random,
+        Upper_CI = meta_result$upper.random,
+        Heterogeneity_Q = meta_result$Q,
+        Heterogeneity_pval = meta_result$pval.Q,
+        I_squared = meta_result$I2,
+        Tau_squared = meta_result$tau^2
+      ) %>%
+        mutate(RD_with_CI = sprintf("%.3f (%.3f, %.3f)", RD_Estimate, Lower_CI, Upper_CI))
+      
+      key <- paste(drug, outcome, timepoint, sep = "_")
+      all_meta_summaries[[key]] <- meta_summary
+      
+      # Save forest plot
+      plot_filename <- paste0(output_plot_dir, "/forestplot_",
+                              gsub("[^a-zA-Z0-9]", "_", drug), "_",
+                              gsub("[^a-zA-Z0-9]", "_", outcome), "_",
+                              gsub("[^a-zA-Z0-9]", "_", timepoint), ".png")
+      
+      png(plot_filename, width = 14, height = 5, units = "in", res = 300)
+      forest(meta_result,
+             xlab = "Risk Difference (95% CI)",
+             leftlabs = c("Study", "Drug Events", "Drug Total", "Placebo Events", "Placebo Total"),
+             label.e = "Drug",
+             label.c = "Placebo",
+             comb.random = TRUE,
+             digits = 3,
+             smlab = "Risk Difference",
+             col.square = "navy",
+             col.diamond = "darkred",
+             col.diamond.lines = "darkred")
+      dev.off()
+    }
+  }
+}
+
+# Combine and view all results
+meta_summary_df <- bind_rows(all_meta_summaries)
+# meta_summary_df
+
+```
+
+
+```{r}
+write.csv(meta_summary_df, file = "data/03_percMA_rd_drug_group1.csv", row.names = FALSE)
+save(meta_summary_df, file = "data/03_percMA_rd_drug_group1.RData")
+```
+
+
+
+# Subgroup analysis - by indication
+
+## Bring in sample characteristics dataset
+```{r}
+dat_inc_sc <- read_sas(paste0(datapath, "kq1_inc_rct_samchar.sas7bdat"))
+
+# keep one record per extraction_id where flag_ind_diabetes = 1
+dat_dm <- dat_inc_sc %>% 
+  filter(flag_ind_diabetes == 1) %>%
+  group_by(Extraction_ID) %>%
+  slice(1) %>%
+  ungroup()
+# Keep studies with diabetes indication
+dat_inc_rd_dose_dm <- inner_join(dat_inc_rd_dose, 
+                                dat_dm %>% select(Extraction_ID), 
+                                by = "Extraction_ID") 
+
+
+# Keep one record per extraction_id where flag_ind_weight = 1
+dat_wt <- dat_inc_sc %>% 
+  filter(flag_ind_weight == 1) %>%
+  group_by(Extraction_ID) %>%
+  slice(1) %>%
+  ungroup()
+# Keep studies with diabetes indication
+dat_inc_rd_dose_wt <- inner_join(dat_inc_rd_dose, 
+                                dat_wt %>% select(Extraction_ID), 
+                                by = "Extraction_ID") 
+
+```
+
+## Function to generate one csv per subgroup
+
+```{r}
+run_rd_meta_subgrp <- function(input_data, output_csv) {
+
+  # Get unique values
+  drugs <- unique(input_data$drug_group1)
+  outcomes <- unique(input_data$outcome_l2)
+  timepoints <- unique(input_data$timec2)
+
+  # Store all summaries
+  all_meta_summaries <- list()
+
+  # Loop through drugs, outcomes, and timepoints
+  for (drug in drugs) {
+    drug_data <- input_data %>% filter(drug_group1 == drug)
+
+    for (outcome in outcomes) {
+      for (timepoint in timepoints) {
+        subset_data <- drug_data %>%
+          filter(outcome_l2 == outcome, timec2 == timepoint)
+
+        # Skip if not enough data
+        if (nrow(subset_data) < 2) next
+
+        # Run meta-analysis
+        meta_result <- metabin(
+          event.e = events_drug,
+          n.e = total_n_drug,
+          event.c = events_pbo,
+          n.c = total_n_pbo,
+          data = subset_data,
+          studlab = study,
+          sm = "RD",
+          method = "Inverse",
+          incr = 0.5,
+          method.incr = "only0",
+          random = TRUE
+        )
+
+        # Store summary
+        meta_summary <- data.frame(
+          Drug = drug,
+          Outcome = outcome,
+          Timepoint = timepoint,
+          Number_of_Studies = meta_result$k,
+          RD_Estimate = meta_result$TE.random,
+          Lower_CI = meta_result$lower.random,
+          Upper_CI = meta_result$upper.random,
+          Heterogeneity_Q = meta_result$Q,
+          Heterogeneity_pval = meta_result$pval.Q,
+          I_squared = meta_result$I2,
+          Tau_squared = meta_result$tau^2
+        ) %>%
+          mutate(RD_with_CI = sprintf("%.3f (%.3f, %.3f)", RD_Estimate, Lower_CI, Upper_CI))
+
+        key <- paste(drug, outcome, timepoint, sep = "_")
+        all_meta_summaries[[key]] <- meta_summary
+      }
+    }
+  }
+
+  # Combine and export results
+  meta_summary_df <- bind_rows(all_meta_summaries)
+  write.csv(meta_summary_df, file = output_csv, row.names = FALSE)
+  
+  return(meta_summary_df)
+}
+```
+
+```{r}
+run_rd_meta_subgrp(input_data = dat_inc_rd_dose_dm, output_csv = "data/03_percMA_rd_drug_group1_diabetes.csv")
+```
+
+```{r}
+run_rd_meta_subgrp(input_data = dat_inc_rd_dose_wt, output_csv = "data/03_percMA_rd_drug_group1_weight.csv")
+```
+
